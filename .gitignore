@@ -1,0 +1,13 @@
+# SwiftPM and app build output
+.build/
+.swiftpm/
+DerivedData/
+build/
+build/*.app
+
+# Local caches
+.cache/
+.home/
+
+# macOS
+.DS_Store
