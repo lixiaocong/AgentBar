@@ -4,6 +4,7 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
     case codex
     case githubCopilot
     case gemini
+    case claude
 
     var id: String { rawValue }
 
@@ -13,6 +14,8 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
             return .githubCopilot
         case AgentProviderKind.gemini.rawValue:
             return .gemini
+        case AgentProviderKind.claude.rawValue:
+            return .claude
         case AgentProviderKind.codex.rawValue, "codexCloudAPI", "localCodex", "openAIAdminAPI":
             return .codex
         default:
@@ -28,6 +31,8 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
             return "GitHub Copilot"
         case .gemini:
             return "Gemini"
+        case .claude:
+            return "Claude"
         }
     }
 
@@ -39,6 +44,8 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
             return "Tracks monthly GitHub Copilot premium-request usage for one personal account."
         case .gemini:
             return "Tracks per-model request quota for Gemini Code Assist (shared with Antigravity IDE)."
+        case .claude:
+            return "Detects the local Claude Code account from auth.json. Quota windows are not exposed by AgentBar yet."
         }
     }
 
@@ -50,6 +57,8 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
             return "Copilot"
         case .gemini:
             return "Gemini"
+        case .claude:
+            return "Claude"
         }
     }
 
@@ -61,6 +70,8 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
             return "P"
         case .gemini:
             return "G"
+        case .claude:
+            return "Cl"
         }
     }
 
@@ -72,6 +83,8 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
             return .seconds(60)
         case .gemini:
             return .seconds(30)
+        case .claude:
+            return .seconds(30)
         }
     }
 }
@@ -80,9 +93,10 @@ struct AgentProviderAvailability: Sendable, Equatable {
     var codex: Bool
     var githubCopilot: Bool
     var gemini: Bool
+    var claude: Bool
 
-    static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false)
-    static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true)
+    static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false)
+    static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true)
 
     var availableProviders: [AgentProviderKind] {
         AgentProviderKind.allCases.filter(isAvailable)
@@ -96,7 +110,37 @@ struct AgentProviderAvailability: Sendable, Equatable {
             return githubCopilot
         case .gemini:
             return gemini
+        case .claude:
+            return claude
         }
+    }
+}
+
+struct ConfiguredAgentAccount: Identifiable, Equatable, Sendable {
+    let provider: AgentProviderKind
+    let directory: ConfiguredAccountDirectory
+
+    var id: String {
+        "\(provider.rawValue)::\(directory.path)"
+    }
+
+    var displayPath: String {
+        directory.displayPath
+    }
+}
+
+struct AgentAccountStatus: Identifiable, Equatable, Sendable {
+    let account: ConfiguredAgentAccount
+    let snapshot: AgentQuotaSnapshot?
+    let errorMessage: String?
+    let credentialsDetected: Bool
+
+    var id: String { account.id }
+    var provider: AgentProviderKind { account.provider }
+    var displayPath: String { account.displayPath }
+
+    var shouldDisplayInMenu: Bool {
+        credentialsDetected || snapshot != nil || errorMessage != nil
     }
 }
 

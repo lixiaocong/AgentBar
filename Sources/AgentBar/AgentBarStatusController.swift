@@ -4,10 +4,15 @@ import SwiftUI
 
 @MainActor
 final class AgentBarStatusController: NSObject {
+    private static let popoverMaximumContentSize = CGSize(width: 1440, height: 1040)
+    private static let popoverScreenMargin: CGFloat = 80
+
     private let model: AppModel
     private let settingsWindowController: AgentBarSettingsWindowController
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
+    private var hostingController: NSHostingController<MenuBarView>?
+    private var preferredPopoverContentSize = MenuBarView.minimumContentSize
 
     init(
         model: AppModel,
@@ -35,15 +40,20 @@ final class AgentBarStatusController: NSObject {
     private func configurePopover() {
         popover.behavior = .transient
         popover.animates = false
-        popover.contentSize = NSSize(width: 340, height: 500)
-        popover.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: MenuBarView(
                 model: model,
                 openSettingsAction: { [weak self] in
                     self?.showSettings()
+                },
+                onPreferredSizeChange: { [weak self] size in
+                    self?.updatePopoverContentSize(preferredSize: size)
                 }
             )
         )
+        self.hostingController = hostingController
+        popover.contentViewController = hostingController
+        updatePopoverContentSize(preferredSize: preferredPopoverContentSize)
     }
 
     private func startObservation() {
@@ -55,6 +65,7 @@ final class AgentBarStatusController: NSObject {
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.updateStatusItem()
+                self?.updatePopoverContentSize()
                 self?.startObservation()
             }
         }
@@ -79,6 +90,7 @@ final class AgentBarStatusController: NSObject {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            updatePopoverContentSize(screen: button.window?.screen)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
@@ -95,5 +107,53 @@ final class AgentBarStatusController: NSObject {
         DispatchQueue.main.async {
             settingsWindowController.show()
         }
+    }
+
+    private func updatePopoverContentSize(
+        preferredSize: CGSize? = nil,
+        screen: NSScreen? = nil
+    ) {
+        if let preferredSize {
+            preferredPopoverContentSize = preferredSize
+        } else if let hostingController {
+            hostingController.view.layoutSubtreeIfNeeded()
+            let fittedSize = hostingController.view.fittingSize
+            preferredPopoverContentSize = CGSize(
+                width: max(fittedSize.width, MenuBarView.minimumContentSize.width),
+                height: max(fittedSize.height, MenuBarView.minimumContentSize.height)
+            )
+        }
+
+        let constrainedSize = constrainedPopoverContentSize(
+            for: preferredPopoverContentSize,
+            screen: screen ?? statusItem.button?.window?.screen
+        )
+        popover.contentSize = constrainedSize
+    }
+
+    private func constrainedPopoverContentSize(
+        for preferredSize: CGSize,
+        screen: NSScreen?
+    ) -> CGSize {
+        let visibleFrame = (screen ?? NSScreen.main)?.visibleFrame
+        let maximumWidth = min(
+            Self.popoverMaximumContentSize.width,
+            max(
+                MenuBarView.minimumContentSize.width,
+                (visibleFrame?.width ?? Self.popoverMaximumContentSize.width) - Self.popoverScreenMargin
+            )
+        )
+        let maximumHeight = min(
+            Self.popoverMaximumContentSize.height,
+            max(
+                MenuBarView.minimumContentSize.height,
+                (visibleFrame?.height ?? Self.popoverMaximumContentSize.height) - Self.popoverScreenMargin
+            )
+        )
+
+        return CGSize(
+            width: min(max(preferredSize.width, MenuBarView.minimumContentSize.width), maximumWidth),
+            height: min(max(preferredSize.height, MenuBarView.minimumContentSize.height), maximumHeight)
+        )
     }
 }

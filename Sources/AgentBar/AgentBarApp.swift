@@ -14,7 +14,7 @@ struct AgentBarApp: App {
     var body: some Scene {
         Settings {
             SettingsView(model: model)
-                .frame(width: 420)
+                .frame(width: 900, height: 680)
                 .padding(20)
         }
     }

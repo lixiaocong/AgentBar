@@ -1,10 +1,23 @@
 # AgentBar
 
-Minimal macOS menu bar app for tracking coding-agent usage. The current MVP supports:
+Minimal macOS menu bar app for tracking local coding-agent usage and account status.
 
-- one provider at a time
+> This app was generated entirely by coding agents.
+
+AgentBar detects supported providers automatically from local CLI or IDE login files and displays them side by side in the menu bar popover. Providers without local credentials stay hidden.
+
+## Main UI
+
+The popover shows all detected providers side by side, and each provider column can include multiple configured accounts. The preview below uses the original screenshot, with personal details masked.
+
+![AgentBar main UI preview with masked account details](Resources/Screenshots/main-ui-screenshot-masked.png)
+
+Current providers:
+
 - Codex
-- GitHub Copilot personal accounts
+- GitHub Copilot
+- Gemini Code Assist
+- Claude Code
 
 ## Run
 
@@ -18,44 +31,53 @@ swift run AgentBar
 swift test --scratch-path .build
 ```
 
-## How it works
+## How It Works
 
 ### Codex
 
-The app calls the same backend usage API used by the ChatGPT-backed Codex client:
+AgentBar reads `~/.codex/auth.json`, then calls:
 
 - `GET https://chatgpt.com/backend-api/wham/usage`
-- `Authorization: Bearer <access_token>`
-- `ChatGPT-Account-Id: <account_id>`
 
-This mode uses the local Codex login store only for credentials, not for quota data. It reads:
+It displays:
 
-- 5-hour usage percent
-- weekly usage percent
+- 5-hour usage
+- 7-day usage
 - reset timestamps
 - detected plan type
 
-Use this when you want the same numbers shown on `https://chatgpt.com/codex/cloud/settings/usage`.
-There is no local rollout-file quota fallback in this mode.
-
 ### GitHub Copilot
 
-The app calls GitHub's documented billing usage API for one personal account:
+AgentBar reads `~/.config/github-copilot/apps.json`, then calls:
 
-- `GET https://api.github.com/users/{username}/settings/billing/premium_request/usage`
-- `Authorization: Bearer <fine-grained-token>`
-- `X-GitHub-Api-Version: 2026-03-10`
+- `GET https://api.github.com/copilot_internal/user`
 
-This mode currently tracks:
+It displays:
 
 - monthly premium-request usage
-- the configured personal Copilot plan allowance
-- the next monthly reset boundary
+- plan allowance
+- reset timestamp
 
-It requires:
+### Gemini Code Assist
 
-- a GitHub username
-- a fine-grained personal access token with `Plan` user permission set to read
-- a selected personal Copilot plan: Free, Student, Pro, or Pro+
+AgentBar reads `~/.gemini/oauth_creds.json`, refreshes the OAuth token from the local Gemini CLI metadata when needed, then calls:
 
-This first Copilot version is personal-account only and uses the selected plan's documented included premium-request allowance to compute remaining quota.
+- `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
+- `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`
+
+It displays:
+
+- detected Google account
+- tier name
+- per-model request quota buckets
+
+### Claude Code
+
+AgentBar reads `~/.config/claude-code/auth.json`.
+
+It currently displays:
+
+- detected Claude account label when available
+- detected auth mode or plan label when available
+
+Claude support is local-auth detection only for now. AgentBar does not currently show Claude quota windows because the app does not have a confirmed quota endpoint wired for Claude yet.

@@ -10,24 +10,21 @@ final class AppModel {
     static let minimumRefreshIntervalSeconds = 5
     static let maximumRefreshIntervalSeconds = 300
     static let refreshIntervalStepSeconds = 5
+
     private static let menuBarDisplayModeDefaultsKey = "menuBarDisplayMode"
     private static let refreshIntervalDefaultsKey = "refreshIntervalSeconds"
+    private static let configuredAccountDirectoriesDefaultsKeyPrefix = "configuredAccountDirectories."
 
-    private let codexCloudService: CodexQuotaService
-    private let copilotService: GitHubCopilotQuotaService
-    private let geminiService: GeminiQuotaService
     private let userDefaults: UserDefaults
     private let autoRefreshEnabled: Bool
-    private let providerAvailabilityResolver: @Sendable () -> AgentProviderAvailability
+    private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
     private var refreshTask: Task<Void, Never>?
+    private var needsRefreshAfterCurrentRun = false
+    private var configuredDirectoriesByProvider: [AgentProviderKind: [ConfiguredAccountDirectory]]
+    private var accountSnapshotsByID: [String: AgentQuotaSnapshot] = [:]
+    private var accountErrorsByID: [String: String] = [:]
 
     var providerAvailability: AgentProviderAvailability
-    var codexSnapshot: AgentQuotaSnapshot?
-    var copilotSnapshot: AgentQuotaSnapshot?
-    var geminiSnapshot: AgentQuotaSnapshot?
-    var codexError: String?
-    var copilotError: String?
-    var geminiError: String?
     var isRefreshing = false
     var menuBarDisplayMode: MenuBarDisplayMode {
         didSet {
@@ -49,33 +46,63 @@ final class AppModel {
         }
     }
 
+    var codexSnapshot: AgentQuotaSnapshot? {
+        get { summarySnapshot(for: .codex) }
+        set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .codex) }
+    }
+
+    var copilotSnapshot: AgentQuotaSnapshot? {
+        get { summarySnapshot(for: .githubCopilot) }
+        set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .githubCopilot) }
+    }
+
+    var geminiSnapshot: AgentQuotaSnapshot? {
+        get { summarySnapshot(for: .gemini) }
+        set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .gemini) }
+    }
+
+    var claudeSnapshot: AgentQuotaSnapshot? {
+        get { summarySnapshot(for: .claude) }
+        set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .claude) }
+    }
+
+    var codexError: String? {
+        get { summaryError(for: .codex) }
+        set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .codex) }
+    }
+
+    var copilotError: String? {
+        get { summaryError(for: .githubCopilot) }
+        set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .githubCopilot) }
+    }
+
+    var geminiError: String? {
+        get { summaryError(for: .gemini) }
+        set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .gemini) }
+    }
+
+    var claudeError: String? {
+        get { summaryError(for: .claude) }
+        set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .claude) }
+    }
+
     init(
-        codexCloudService: CodexQuotaService = CodexQuotaService(),
-        copilotService: GitHubCopilotQuotaService = GitHubCopilotQuotaService(),
-        geminiService: GeminiQuotaService = GeminiQuotaService(),
         userDefaults: UserDefaults = .standard,
         providerAvailabilityResolver: (@Sendable () -> AgentProviderAvailability)? = nil,
         startImmediately: Bool = true
     ) {
-        self.codexCloudService = codexCloudService
-        self.copilotService = copilotService
-        self.geminiService = geminiService
         self.userDefaults = userDefaults
         self.autoRefreshEnabled = startImmediately
-        self.providerAvailabilityResolver = providerAvailabilityResolver ?? {
-            AgentProviderAvailability(
-                codex: codexCloudService.isAvailable,
-                githubCopilot: copilotService.isAvailable,
-                gemini: geminiService.isAvailable
-            )
-        }
-        self.providerAvailability = self.providerAvailabilityResolver()
+        self.providerAvailabilityOverride = providerAvailabilityResolver
+        self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
+        self.providerAvailability = .none
         menuBarDisplayMode = MenuBarDisplayMode.fromStoredValue(
             userDefaults.string(forKey: Self.menuBarDisplayModeDefaultsKey)
         )
         refreshIntervalSeconds = Self.normalizedRefreshInterval(
             userDefaults.object(forKey: Self.refreshIntervalDefaultsKey) as? Int
         )
+        refreshProviderAvailability()
 
         if startImmediately {
             refreshNow()
@@ -87,9 +114,11 @@ final class AppModel {
         providerAvailability.availableProviders
     }
 
-    /// All successfully loaded snapshots for locally available providers.
+    /// All successfully loaded snapshots for visible accounts.
     var snapshots: [AgentQuotaSnapshot] {
-        availableProviders.compactMap(snapshot(for:))
+        availableProviders.flatMap { provider in
+            visibleAccountStatuses(for: provider).compactMap(\.snapshot)
+        }
     }
 
     /// The most critical metric across all providers (highest usedPercent).
@@ -128,15 +157,19 @@ final class AppModel {
     }
 
     var codexUsedPercent: Double? {
-        codexSnapshot?.highlightMetric?.usedPercent
+        usedPercent(for: .codex)
     }
 
     var copilotUsedPercent: Double? {
-        copilotSnapshot?.highlightMetric?.usedPercent
+        usedPercent(for: .githubCopilot)
     }
 
     var geminiUsedPercent: Double? {
-        geminiSnapshot?.highlightMetric?.usedPercent
+        usedPercent(for: .gemini)
+    }
+
+    var claudeUsedPercent: Double? {
+        usedPercent(for: .claude)
     }
 
     var menuBarIconEmphasis: MenuBarStatusImage.Emphasis {
@@ -148,103 +181,185 @@ final class AppModel {
         }
     }
 
+    func configuredAccounts(for provider: AgentProviderKind) -> [ConfiguredAccountDirectory] {
+        configuredDirectoriesByProvider[provider] ?? []
+    }
+
+    func accountStatuses(for provider: AgentProviderKind) -> [AgentAccountStatus] {
+        configuredAccounts(for: provider).map { directory in
+            let account = ConfiguredAgentAccount(provider: provider, directory: directory)
+            return accountStatus(for: account)
+        }
+    }
+
+    func visibleAccountStatuses(for provider: AgentProviderKind) -> [AgentAccountStatus] {
+        accountStatuses(for: provider).filter(\.shouldDisplayInMenu)
+    }
+
+    func selectAccountDirectory(for provider: AgentProviderKind) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.showsHiddenFiles = true
+        panel.prompt = "Choose"
+        panel.title = "Choose \(provider.title) Account Directory"
+        panel.message = "Choose the \(provider.title) config directory that contains \(provider.credentialsFileDescription). Hidden folders are shown here."
+        panel.directoryURL = provider.defaultAccountDirectory.url.deletingLastPathComponent()
+
+        guard panel.runModal() == .OK else {
+            return nil
+        }
+
+        return panel.url
+    }
+
+    func addAccountDirectory(for provider: AgentProviderKind) {
+        guard let directoryURL = selectAccountDirectory(for: provider) else {
+            return
+        }
+
+        addConfiguredAccountDirectory(directoryURL, for: provider)
+    }
+
+    @discardableResult
+    func addConfiguredAccountDirectory(
+        path rawPath: String,
+        for provider: AgentProviderKind
+    ) -> AddConfiguredAccountDirectoryResult {
+        let trimmedPath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPath.isEmpty else {
+            return .emptyPath
+        }
+
+        let directory = ConfiguredAccountDirectory(path: trimmedPath)
+        guard !configuredAccounts(for: provider).contains(directory) else {
+            return .duplicate
+        }
+
+        updateConfiguredAccounts(
+            configuredAccounts(for: provider) + [directory],
+            for: provider
+        )
+        return .added
+    }
+
+    func addConfiguredAccountDirectory(
+        _ directoryURL: URL,
+        for provider: AgentProviderKind
+    ) {
+        _ = addConfiguredAccountDirectory(path: directoryURL.path, for: provider)
+    }
+
+    func removeConfiguredAccount(_ account: ConfiguredAgentAccount) {
+        let updated = configuredAccounts(for: account.provider).filter { $0 != account.directory }
+        clearStoredAccountState(for: [account.id])
+        updateConfiguredAccounts(updated, for: account.provider)
+    }
+
+    func openConfiguredAccountDirectory(_ account: ConfiguredAgentAccount) {
+        NSWorkspace.shared.open(account.directory.url)
+    }
+
     func refreshNow() {
-        guard !isRefreshing else { return }
+        if isRefreshing {
+            needsRefreshAfterCurrentRun = true
+            return
+        }
+
         refreshProviderAvailability()
         isRefreshing = true
+        let availableAccounts = availableConfiguredAccounts()
+        let visibleProviderTitles = availableProviders.map(\.menuBarTitlePrefix)
 
         Task {
-            defer { isRefreshing = false }
-            let availability = providerAvailability
-            guard !availableProviders.isEmpty else {
+            defer {
+                isRefreshing = false
+
+                if needsRefreshAfterCurrentRun {
+                    needsRefreshAfterCurrentRun = false
+                    refreshNow()
+                }
+            }
+
+            guard !availableAccounts.isEmpty else {
                 logInfo("No supported providers detected locally.")
                 return
             }
 
-            logInfo("Refreshing detected providers: \(availableProviders.map(\.menuBarTitlePrefix).joined(separator: ", "))")
+            logInfo("Refreshing detected providers: \(visibleProviderTitles.joined(separator: ", "))")
 
-            async let codexResult = loadIfAvailable(availability.codex, using: loadCodex)
-            async let copilotResult = loadIfAvailable(availability.githubCopilot, using: loadCopilot)
-            async let geminiResult = loadIfAvailable(availability.gemini, using: loadGemini)
-
-            let (codex, copilot, gemini) = await (codexResult, copilotResult, geminiResult)
-
-            apply(result: codex, provider: .codex)
-            apply(result: copilot, provider: .githubCopilot)
-            apply(result: gemini, provider: .gemini)
+            let results = await Self.loadAccounts(availableAccounts)
+            apply(results: results)
         }
     }
 
     func snapshot(for provider: AgentProviderKind) -> AgentQuotaSnapshot? {
-        switch provider {
-        case .codex:
-            return codexSnapshot
-        case .githubCopilot:
-            return copilotSnapshot
-        case .gemini:
-            return geminiSnapshot
-        }
+        summarySnapshot(for: provider)
     }
 
     func errorMessage(for provider: AgentProviderKind) -> String? {
-        switch provider {
-        case .codex:
-            return codexError
-        case .githubCopilot:
-            return copilotError
-        case .gemini:
-            return geminiError
-        }
+        summaryError(for: provider)
     }
 
     func usedPercent(for provider: AgentProviderKind) -> Double? {
-        snapshot(for: provider)?.highlightMetric?.usedPercent
-    }
-
-    func openCodexRoot() {
-        NSWorkspace.shared.open(codexCloudService.installation.rootDirectory)
-    }
-
-    func openCopilotConfigDirectory() {
-        NSWorkspace.shared.open(copilotService.installation.configDirectory)
-    }
-
-    func openGeminiConfigDirectory() {
-        NSWorkspace.shared.open(geminiService.installation.configDirectory)
+        summarySnapshot(for: provider)?.highlightMetric?.usedPercent
     }
 
     // MARK: - Private
 
-    private func loadCodex() async -> Result<AgentQuotaSnapshot, Error> {
-        do {
-            return .success(try await codexCloudService.loadSnapshot())
-        } catch {
-            return .failure(error)
-        }
+    private func summarySnapshot(for provider: AgentProviderKind) -> AgentQuotaSnapshot? {
+        let snapshots = visibleAccountStatuses(for: provider).compactMap(\.snapshot)
+        return snapshots.max { snapshotPriority($0) < snapshotPriority($1) } ?? snapshots.first
     }
 
-    private func loadCopilot() async -> Result<AgentQuotaSnapshot, Error> {
-        do {
-            return .success(try await copilotService.loadSnapshot())
-        } catch {
-            return .failure(error)
-        }
+    private func summaryError(for provider: AgentProviderKind) -> String? {
+        guard summarySnapshot(for: provider) == nil else { return nil }
+        return visibleAccountStatuses(for: provider).compactMap(\.errorMessage).first
     }
 
-    private func loadGemini() async -> Result<AgentQuotaSnapshot, Error> {
-        do {
-            return .success(try await geminiService.loadSnapshot())
-        } catch {
-            return .failure(error)
-        }
+    private func snapshotPriority(_ snapshot: AgentQuotaSnapshot) -> Double {
+        snapshot.highlightMetric?.usedPercent ?? -1
     }
 
-    private func loadIfAvailable(
-        _ isAvailable: Bool,
-        using loader: @escaping () async -> Result<AgentQuotaSnapshot, Error>
-    ) async -> Result<AgentQuotaSnapshot, Error>? {
-        guard isAvailable else { return nil }
-        return await loader()
+    private func accountStatus(for account: ConfiguredAgentAccount) -> AgentAccountStatus {
+        AgentAccountStatus(
+            account: account,
+            snapshot: accountSnapshotsByID[account.id],
+            errorMessage: accountErrorsByID[account.id],
+            credentialsDetected: isConfiguredAccountAvailable(account)
+        )
+    }
+
+    private func setPrimaryAccountState(
+        snapshot: AgentQuotaSnapshot?,
+        error: String?,
+        for provider: AgentProviderKind
+    ) {
+        let account = ConfiguredAgentAccount(
+            provider: provider,
+            directory: configuredAccounts(for: provider).first ?? provider.defaultAccountDirectory
+        )
+        setAccountState(snapshot: snapshot, error: error, for: account)
+    }
+
+    private func setAccountState(
+        snapshot: AgentQuotaSnapshot?,
+        error: String?,
+        for account: ConfiguredAgentAccount
+    ) {
+        if let snapshot {
+            accountSnapshotsByID[account.id] = snapshot
+        } else {
+            accountSnapshotsByID.removeValue(forKey: account.id)
+        }
+
+        if let error, !error.isEmpty {
+            accountErrorsByID[account.id] = error
+        } else {
+            accountErrorsByID.removeValue(forKey: account.id)
+        }
     }
 
     private func startAutoRefresh() {
@@ -266,56 +381,181 @@ final class AppModel {
     }
 
     private func refreshProviderAvailability() {
-        providerAvailability = providerAvailabilityResolver()
+        pruneStoredAccountResults()
+        providerAvailability = providerAvailabilityOverride?() ?? computedProviderAvailability()
+    }
 
-        if !providerAvailability.codex {
-            codexSnapshot = nil
-            codexError = nil
-        }
+    private func computedProviderAvailability() -> AgentProviderAvailability {
+        AgentProviderAvailability(
+            codex: hasAvailableAccount(for: .codex),
+            githubCopilot: hasAvailableAccount(for: .githubCopilot),
+            gemini: hasAvailableAccount(for: .gemini),
+            claude: hasAvailableAccount(for: .claude)
+        )
+    }
 
-        if !providerAvailability.githubCopilot {
-            copilotSnapshot = nil
-            copilotError = nil
-        }
-
-        if !providerAvailability.gemini {
-            geminiSnapshot = nil
-            geminiError = nil
+    private func hasAvailableAccount(for provider: AgentProviderKind) -> Bool {
+        configuredAccounts(for: provider).contains { directory in
+            isConfiguredAccountAvailable(
+                ConfiguredAgentAccount(provider: provider, directory: directory)
+            )
         }
     }
 
-    private func apply(
-        result: Result<AgentQuotaSnapshot, Error>?,
-        provider: AgentProviderKind
-    ) {
-        guard let result else { return }
-
-        switch result {
-        case .success(let snap):
-            setSnapshot(snap, error: nil, for: provider)
-            logInfo("\(provider.title) snapshot loaded — \(snap.highlightMetric?.percentText ?? "n/a") remaining")
-        case .failure(let err):
-            let message = (err as? LocalizedError)?.errorDescription ?? err.localizedDescription
-            setSnapshot(nil, error: message, for: provider)
-            logError("[AppModel] \(provider.title) refresh failed: \(message)")
+    private func allConfiguredAccounts() -> [ConfiguredAgentAccount] {
+        AgentProviderKind.allCases.flatMap { provider in
+            configuredAccounts(for: provider).map { directory in
+                ConfiguredAgentAccount(provider: provider, directory: directory)
+            }
         }
     }
 
-    private func setSnapshot(
-        _ snapshot: AgentQuotaSnapshot?,
-        error: String?,
+    private func availableConfiguredAccounts() -> [ConfiguredAgentAccount] {
+        allConfiguredAccounts().filter(isConfiguredAccountAvailable)
+    }
+
+    private func isConfiguredAccountAvailable(_ account: ConfiguredAgentAccount) -> Bool {
+        switch account.provider {
+        case .codex:
+            return CodexQuotaService(
+                installation: CodexInstallation(rootDirectory: account.directory.url)
+            ).isAvailable
+        case .githubCopilot:
+            return GitHubCopilotQuotaService(
+                installation: GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
+            ).isAvailable
+        case .gemini:
+            return GeminiQuotaService(
+                installation: GeminiCLIInstallation(
+                    configDirectory: account.directory.url,
+                    executableLocations: GeminiCLIInstallation.defaultExecutableLocations
+                )
+            ).isAvailable
+        case .claude:
+            return ClaudeQuotaService(
+                installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
+            ).isAvailable
+        }
+    }
+
+    private func pruneStoredAccountResults() {
+        let accounts = allConfiguredAccounts()
+        let validIDs = Set(accounts.map(\.id))
+        accountSnapshotsByID = accountSnapshotsByID.filter { validIDs.contains($0.key) }
+        accountErrorsByID = accountErrorsByID.filter { validIDs.contains($0.key) }
+
+        let unavailableIDs = Set(
+            accounts
+                .filter { !isConfiguredAccountAvailable($0) }
+                .map(\.id)
+        )
+
+        clearStoredAccountState(for: unavailableIDs)
+    }
+
+    private func clearStoredAccountState(for accountIDs: some Sequence<String>) {
+        for accountID in accountIDs {
+            accountSnapshotsByID.removeValue(forKey: accountID)
+            accountErrorsByID.removeValue(forKey: accountID)
+        }
+    }
+
+    private func updateConfiguredAccounts(
+        _ directories: [ConfiguredAccountDirectory],
         for provider: AgentProviderKind
     ) {
-        switch provider {
+        configuredDirectoriesByProvider[provider] = directories
+        persistConfiguredAccounts(for: provider)
+        refreshProviderAvailability()
+
+        guard autoRefreshEnabled else { return }
+
+        if isRefreshing {
+            needsRefreshAfterCurrentRun = true
+        } else {
+            refreshNow()
+        }
+    }
+
+    private func persistConfiguredAccounts(for provider: AgentProviderKind) {
+        userDefaults.set(
+            configuredAccounts(for: provider).map(\.path),
+            forKey: Self.configuredAccountDirectoriesDefaultsKey(for: provider)
+        )
+    }
+
+    private func apply(results: [AccountRefreshResult]) {
+        let configuredIDs = Set(allConfiguredAccounts().map(\.id))
+
+        for result in results where configuredIDs.contains(result.account.id) {
+            switch result.result {
+            case .success(let snapshot):
+                setAccountState(snapshot: snapshot, error: nil, for: result.account)
+                if let metric = snapshot.highlightMetric {
+                    logInfo("\(result.account.provider.title) account \(snapshot.accountLabel) loaded — \(metric.percentText) remaining")
+                } else {
+                    logInfo("\(result.account.provider.title) account \(snapshot.accountLabel) loaded — local auth detected")
+                }
+            case .failure(let error):
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                setAccountState(snapshot: nil, error: message, for: result.account)
+                logError("[AppModel] \(result.account.provider.title) refresh failed for \(result.account.displayPath): \(message)")
+            }
+        }
+
+        refreshProviderAvailability()
+    }
+
+    private static func loadAccounts(
+        _ accounts: [ConfiguredAgentAccount]
+    ) async -> [AccountRefreshResult] {
+        await withTaskGroup(of: AccountRefreshResult.self, returning: [AccountRefreshResult].self) { group in
+            for account in accounts {
+                group.addTask {
+                    await loadAccount(account)
+                }
+            }
+
+            var results: [AccountRefreshResult] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+    }
+
+    private static func loadAccount(_ account: ConfiguredAgentAccount) async -> AccountRefreshResult {
+        do {
+            return AccountRefreshResult(
+                account: account,
+                result: .success(try await loadSnapshot(for: account))
+            )
+        } catch {
+            return AccountRefreshResult(account: account, result: .failure(error))
+        }
+    }
+
+    private static func loadSnapshot(for account: ConfiguredAgentAccount) async throws -> AgentQuotaSnapshot {
+        switch account.provider {
         case .codex:
-            codexSnapshot = snapshot
-            codexError = error
+            return try await CodexQuotaService(
+                installation: CodexInstallation(rootDirectory: account.directory.url)
+            ).loadSnapshot()
         case .githubCopilot:
-            copilotSnapshot = snapshot
-            copilotError = error
+            return try await GitHubCopilotQuotaService(
+                installation: GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
+            ).loadSnapshot()
         case .gemini:
-            geminiSnapshot = snapshot
-            geminiError = error
+            return try await GeminiQuotaService(
+                installation: GeminiCLIInstallation(
+                    configDirectory: account.directory.url,
+                    executableLocations: GeminiCLIInstallation.defaultExecutableLocations
+                )
+            ).loadSnapshot()
+        case .claude:
+            return try await ClaudeQuotaService(
+                installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
+            ).loadSnapshot()
         }
     }
 
@@ -327,7 +567,9 @@ final class AppModel {
     ) -> String {
         switch menuBarDisplayMode {
         case .shorter:
-            return "\(shortTitle)\(menuBarValueText(snapshot: snapshot, error: error, style: .percent))"
+            let value = menuBarValueText(snapshot: snapshot, error: error, style: .percent)
+            let separator = value.first?.isNumber == true ? "" : " "
+            return "\(shortTitle)\(separator)\(value)"
         case .clearer:
             return "\(title) \(menuBarValueText(snapshot: snapshot, error: error, style: .percent))"
         case .mixedMetrics:
@@ -343,6 +585,10 @@ final class AppModel {
     ) -> String {
         if let snapshot, let metric = snapshot.highlightMetric {
             return "\(title) \(metric.percentText) remaining"
+        }
+
+        if snapshot != nil {
+            return "\(title) ready"
         }
 
         if error != nil {
@@ -366,11 +612,44 @@ final class AppModel {
             }
         }
 
+        if snapshot != nil {
+            return "Ready"
+        }
+
         if error != nil {
             return "!"
         }
 
         return "--"
+    }
+
+    private static func loadConfiguredDirectories(
+        from userDefaults: UserDefaults
+    ) -> [AgentProviderKind: [ConfiguredAccountDirectory]] {
+        Dictionary(uniqueKeysWithValues: AgentProviderKind.allCases.map { provider in
+            (
+                provider,
+                loadConfiguredAccounts(for: provider, from: userDefaults)
+            )
+        })
+    }
+
+    private static func loadConfiguredAccounts(
+        for provider: AgentProviderKind,
+        from userDefaults: UserDefaults
+    ) -> [ConfiguredAccountDirectory] {
+        let key = configuredAccountDirectoriesDefaultsKey(for: provider)
+        guard userDefaults.object(forKey: key) != nil else {
+            return [provider.defaultAccountDirectory]
+        }
+
+        return ConfiguredAccountDirectory.unique(paths: userDefaults.stringArray(forKey: key) ?? [])
+    }
+
+    private static func configuredAccountDirectoriesDefaultsKey(
+        for provider: AgentProviderKind
+    ) -> String {
+        "\(configuredAccountDirectoriesDefaultsKeyPrefix)\(provider.rawValue)"
     }
 
     private static func normalizedRefreshInterval(_ value: Int?) -> Int {
@@ -381,5 +660,16 @@ final class AppModel {
     private enum MenuBarValueStyle {
         case percent
         case remainingLabel
+    }
+
+    enum AddConfiguredAccountDirectoryResult: Equatable {
+        case added
+        case emptyPath
+        case duplicate
+    }
+
+    private struct AccountRefreshResult {
+        let account: ConfiguredAgentAccount
+        let result: Result<AgentQuotaSnapshot, Error>
     }
 }

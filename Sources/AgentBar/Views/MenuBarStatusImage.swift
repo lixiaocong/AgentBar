@@ -20,9 +20,10 @@ enum MenuBarStatusImage {
         NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
 
         let values = usedPercents.isEmpty ? [nil] : usedPercents
-        let barWidth: CGFloat = 4
         let barHeight: CGFloat = 12
-        let spacing: CGFloat = 2.5
+        let spacing: CGFloat = values.count > 3 ? 1.5 : 2.5
+        let availableWidth = size.width - spacing * CGFloat(max(values.count - 1, 0))
+        let barWidth = min(4, max(2, availableWidth / CGFloat(values.count)))
         let totalWidth = barWidth * CGFloat(values.count) + spacing * CGFloat(max(values.count - 1, 0))
         let startX = (size.width - totalWidth) / 2
 
