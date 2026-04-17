@@ -4,6 +4,8 @@
 DerivedData/
 build/
 build/*.app
+.xcodebuild/
+AgentBar.xcodeproj/
 
 # Local caches
 .cache/

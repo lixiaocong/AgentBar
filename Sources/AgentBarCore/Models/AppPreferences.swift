@@ -1,15 +1,15 @@
 import Foundation
 
-enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
+public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
     case shorter
     case clearer
     case mixedMetrics
 
-    static let defaultValue: Self = .clearer
+    public static let defaultValue: Self = .clearer
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    static func fromStoredValue(_ rawValue: String?) -> Self {
+    public static func fromStoredValue(_ rawValue: String?) -> Self {
         guard let rawValue, let value = Self(rawValue: rawValue) else {
             return defaultValue
         }
@@ -17,7 +17,7 @@ enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
         return value
     }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .shorter:
             return "Shorter"
@@ -28,7 +28,7 @@ enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .shorter:
             return "Compact labels for all detected providers."
@@ -39,7 +39,7 @@ enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var example: String {
+    public var example: String {
         switch self {
         case .shorter:
             return "C34%  P77%  G100%  Cl Ready"
@@ -51,31 +51,31 @@ enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct ConfiguredAccountDirectory: Identifiable, Equatable, Hashable, Sendable {
-    let path: String
+public struct ConfiguredAccountDirectory: Identifiable, Equatable, Hashable, Sendable {
+    public let path: String
 
-    init(path: String) {
+    public init(path: String) {
         self.path = Self.normalizedPath(path)
     }
 
-    var id: String { path }
+    public var id: String { path }
 
-    var url: URL {
+    public var url: URL {
         URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    var displayPath: String {
+    public var displayPath: String {
         NSString(string: path).abbreviatingWithTildeInPath
     }
 
-    static func normalizedPath(_ path: String) -> String {
+    public static func normalizedPath(_ path: String) -> String {
         URL(fileURLWithPath: NSString(string: path).expandingTildeInPath, isDirectory: true)
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
     }
 
-    static func unique(paths: [String]) -> [ConfiguredAccountDirectory] {
+    public static func unique(paths: [String]) -> [ConfiguredAccountDirectory] {
         var seen = Set<String>()
 
         return paths.compactMap { rawPath in
@@ -90,7 +90,7 @@ struct ConfiguredAccountDirectory: Identifiable, Equatable, Hashable, Sendable {
 }
 
 extension AgentProviderKind {
-    var defaultAccountDirectory: ConfiguredAccountDirectory {
+    public var defaultAccountDirectory: ConfiguredAccountDirectory {
         switch self {
         case .codex:
             return ConfiguredAccountDirectory(path: "~/.codex")
@@ -103,11 +103,11 @@ extension AgentProviderKind {
         }
     }
 
-    var defaultAccountDirectoryDisplayPath: String {
+    public var defaultAccountDirectoryDisplayPath: String {
         defaultAccountDirectory.displayPath
     }
 
-    var credentialsFileDescription: String {
+    public var credentialsFileDescription: String {
         switch self {
         case .codex:
             return "auth.json"

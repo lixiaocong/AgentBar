@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+#if canImport(AgentBarCore)
+import AgentBarCore
+#endif
+
 @main
 struct AgentBarApp: App {
     @NSApplicationDelegateAdaptor(AgentBarAppDelegate.self) private var appDelegate

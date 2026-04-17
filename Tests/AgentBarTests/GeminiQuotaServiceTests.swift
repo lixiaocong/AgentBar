@@ -1,7 +1,6 @@
+import AgentBarCore
 import Foundation
 import Testing
-
-@testable import AgentBar
 
 @Test func decodesGeminiQuotaPayload() throws {
     let codeAssistJSON = """

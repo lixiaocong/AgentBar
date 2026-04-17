@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+#if canImport(AgentBarCore)
+import AgentBarCore
+#endif
+
 @MainActor
 final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelegate {
     init(model: AppModel) {

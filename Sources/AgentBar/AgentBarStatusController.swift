@@ -2,6 +2,10 @@ import AppKit
 import Observation
 import SwiftUI
 
+#if canImport(AgentBarCore)
+import AgentBarCore
+#endif
+
 @MainActor
 final class AgentBarStatusController: NSObject {
     private static let popoverMaximumContentSize = CGSize(width: 1440, height: 1040)

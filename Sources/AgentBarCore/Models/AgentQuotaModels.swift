@@ -1,14 +1,14 @@
 import Foundation
 
-enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
+public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Sendable {
     case codex
     case githubCopilot
     case gemini
     case claude
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    static func fromStoredValue(_ rawValue: String?) -> Self {
+    public static func fromStoredValue(_ rawValue: String?) -> Self {
         switch rawValue {
         case AgentProviderKind.githubCopilot.rawValue:
             return .githubCopilot
@@ -23,7 +23,7 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .codex:
             return "Codex"
@@ -36,7 +36,7 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var subtitle: String {
+    public var subtitle: String {
         switch self {
         case .codex:
             return "Reads the same 5-hour and weekly usage data shown on the ChatGPT Codex usage page."
@@ -49,7 +49,7 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var menuBarTitlePrefix: String {
+    public var menuBarTitlePrefix: String {
         switch self {
         case .codex:
             return "Codex"
@@ -62,7 +62,7 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var menuBarShortPrefix: String {
+    public var menuBarShortPrefix: String {
         switch self {
         case .codex:
             return "C"
@@ -75,7 +75,7 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var refreshInterval: Duration {
+    public var refreshInterval: Duration {
         switch self {
         case .codex:
             return .seconds(20)
@@ -89,20 +89,27 @@ enum AgentProviderKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct AgentProviderAvailability: Sendable, Equatable {
-    var codex: Bool
-    var githubCopilot: Bool
-    var gemini: Bool
-    var claude: Bool
+public struct AgentProviderAvailability: Sendable, Equatable {
+    public var codex: Bool
+    public var githubCopilot: Bool
+    public var gemini: Bool
+    public var claude: Bool
 
-    static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false)
-    static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true)
+    public init(codex: Bool, githubCopilot: Bool, gemini: Bool, claude: Bool) {
+        self.codex = codex
+        self.githubCopilot = githubCopilot
+        self.gemini = gemini
+        self.claude = claude
+    }
 
-    var availableProviders: [AgentProviderKind] {
+    public static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false)
+    public static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true)
+
+    public var availableProviders: [AgentProviderKind] {
         AgentProviderKind.allCases.filter(isAvailable)
     }
 
-    func isAvailable(_ provider: AgentProviderKind) -> Bool {
+    public func isAvailable(_ provider: AgentProviderKind) -> Bool {
         switch provider {
         case .codex:
             return codex
@@ -116,67 +123,118 @@ struct AgentProviderAvailability: Sendable, Equatable {
     }
 }
 
-struct ConfiguredAgentAccount: Identifiable, Equatable, Sendable {
-    let provider: AgentProviderKind
-    let directory: ConfiguredAccountDirectory
+public struct ConfiguredAgentAccount: Identifiable, Equatable, Sendable {
+    public let provider: AgentProviderKind
+    public let directory: ConfiguredAccountDirectory
 
-    var id: String {
+    public init(provider: AgentProviderKind, directory: ConfiguredAccountDirectory) {
+        self.provider = provider
+        self.directory = directory
+    }
+
+    public var id: String {
         "\(provider.rawValue)::\(directory.path)"
     }
 
-    var displayPath: String {
+    public var displayPath: String {
         directory.displayPath
     }
 }
 
-struct AgentAccountStatus: Identifiable, Equatable, Sendable {
-    let account: ConfiguredAgentAccount
-    let snapshot: AgentQuotaSnapshot?
-    let errorMessage: String?
-    let credentialsDetected: Bool
+public struct AgentAccountStatus: Identifiable, Equatable, Sendable {
+    public let account: ConfiguredAgentAccount
+    public let snapshot: AgentQuotaSnapshot?
+    public let errorMessage: String?
+    public let credentialsDetected: Bool
 
-    var id: String { account.id }
-    var provider: AgentProviderKind { account.provider }
-    var displayPath: String { account.displayPath }
+    public init(
+        account: ConfiguredAgentAccount,
+        snapshot: AgentQuotaSnapshot?,
+        errorMessage: String?,
+        credentialsDetected: Bool
+    ) {
+        self.account = account
+        self.snapshot = snapshot
+        self.errorMessage = errorMessage
+        self.credentialsDetected = credentialsDetected
+    }
 
-    var shouldDisplayInMenu: Bool {
+    public var id: String { account.id }
+    public var provider: AgentProviderKind { account.provider }
+    public var displayPath: String { account.displayPath }
+
+    public var shouldDisplayInMenu: Bool {
         credentialsDetected || snapshot != nil || errorMessage != nil
     }
 }
 
-struct AgentQuotaSnapshot: Sendable, Equatable {
-    let provider: AgentProviderKind
-    let accountLabel: String
-    let planType: String?
-    let modelName: String?
-    let sourceSummary: String
-    let metrics: [AgentQuotaMetric]
-    let updatedAt: Date
+public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
+    public let provider: AgentProviderKind
+    public let accountLabel: String
+    public let planType: String?
+    public let modelName: String?
+    public let sourceSummary: String
+    public let metrics: [AgentQuotaMetric]
+    public let updatedAt: Date
 
-    var highlightMetric: AgentQuotaMetric? {
+    public init(
+        provider: AgentProviderKind,
+        accountLabel: String,
+        planType: String?,
+        modelName: String?,
+        sourceSummary: String,
+        metrics: [AgentQuotaMetric],
+        updatedAt: Date
+    ) {
+        self.provider = provider
+        self.accountLabel = accountLabel
+        self.planType = planType
+        self.modelName = modelName
+        self.sourceSummary = sourceSummary
+        self.metrics = metrics
+        self.updatedAt = updatedAt
+    }
+
+    public var highlightMetric: AgentQuotaMetric? {
         metrics.max { lhs, rhs in
             lhs.usedPercent < rhs.usedPercent
         } ?? metrics.first
     }
 }
 
-struct AgentQuotaMetric: Sendable, Equatable, Identifiable {
-    let id: String
-    let title: String
-    let usedPercent: Double
-    let usedLabel: String
-    let remainingLabel: String
-    let resetsAt: Date?
+public struct AgentQuotaMetric: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let usedPercent: Double
+    public let usedLabel: String
+    public let remainingLabel: String
+    public let resetsAt: Date?
 
-    var remainingPercent: Double {
+    public init(
+        id: String,
+        title: String,
+        usedPercent: Double,
+        usedLabel: String,
+        remainingLabel: String,
+        resetsAt: Date?
+    ) {
+        self.id = id
+        self.title = title
+        self.usedPercent = usedPercent
+        self.usedLabel = usedLabel
+        self.remainingLabel = remainingLabel
+        self.resetsAt = resetsAt
+    }
+
+    public var remainingPercent: Double {
         max(0, 100 - usedPercent)
     }
 
-    var percentText: String {
+    public var percentText: String {
         "\(Int(remainingPercent.rounded()))%"
     }
 
-    static func usageWindow(
+    public static func usageWindow(
         windowMinutes: Int,
         usedPercent: Double,
         resetsAt: Date
@@ -191,7 +249,7 @@ struct AgentQuotaMetric: Sendable, Equatable, Identifiable {
         )
     }
 
-    static func cappedUsage(
+    public static func cappedUsage(
         id: String,
         title: String,
         used: Int,

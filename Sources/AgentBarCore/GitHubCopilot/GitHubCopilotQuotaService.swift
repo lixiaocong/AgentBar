@@ -3,32 +3,36 @@ import os
 
 // MARK: - CLI Installation
 
-struct GitHubCopilotCLIInstallation: Sendable {
-    let configDirectory: URL
+public struct GitHubCopilotCLIInstallation: Sendable {
+    public let configDirectory: URL
 
-    static let `default` = GitHubCopilotCLIInstallation(
+    public static let `default` = GitHubCopilotCLIInstallation(
         configDirectory: URL(fileURLWithPath: NSString(string: "~/.config/github-copilot").expandingTildeInPath)
     )
 
-    var appsFile: URL {
+    public init(configDirectory: URL) {
+        self.configDirectory = configDirectory
+    }
+
+    public var appsFile: URL {
         configDirectory.appending(path: "apps.json")
     }
 }
 
 // MARK: - Service
 
-struct GitHubCopilotQuotaService: Sendable {
-    let installation: GitHubCopilotCLIInstallation
+public struct GitHubCopilotQuotaService: Sendable {
+    public let installation: GitHubCopilotCLIInstallation
 
-    init(installation: GitHubCopilotCLIInstallation = .default) {
+    public init(installation: GitHubCopilotCLIInstallation = .default) {
         self.installation = installation
     }
 
-    var isAvailable: Bool {
+    public var isAvailable: Bool {
         FileManager.default.fileExists(atPath: installation.appsFile.path)
     }
 
-    func loadSnapshot() async throws -> AgentQuotaSnapshot {
+    public func loadSnapshot() async throws -> AgentQuotaSnapshot {
         let installation = installation
         let credentials = try await Task.detached(priority: .userInitiated) {
             try loadCredentialsSynchronously(for: installation)
@@ -38,7 +42,7 @@ struct GitHubCopilotQuotaService: Sendable {
     }
 
     /// Exposed for unit tests — skips credential file reading.
-    func decodeSnapshot(from data: Data, updatedAt: Date) throws -> AgentQuotaSnapshot {
+    public func decodeSnapshot(from data: Data, updatedAt: Date) throws -> AgentQuotaSnapshot {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         do {

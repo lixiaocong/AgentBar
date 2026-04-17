@@ -1,30 +1,34 @@
 import Foundation
 import os
 
-struct CodexInstallation: Sendable {
-    let rootDirectory: URL
+public struct CodexInstallation: Sendable {
+    public let rootDirectory: URL
 
-    static let `default` = CodexInstallation(
+    public static let `default` = CodexInstallation(
         rootDirectory: URL(fileURLWithPath: NSString(string: "~/.codex").expandingTildeInPath)
     )
 
-    var authFile: URL {
+    public init(rootDirectory: URL) {
+        self.rootDirectory = rootDirectory
+    }
+
+    public var authFile: URL {
         rootDirectory.appending(path: "auth.json")
     }
 }
 
-struct CodexQuotaService: Sendable {
-    let installation: CodexInstallation
+public struct CodexQuotaService: Sendable {
+    public let installation: CodexInstallation
 
-    init(installation: CodexInstallation = .default) {
+    public init(installation: CodexInstallation = .default) {
         self.installation = installation
     }
 
-    var isAvailable: Bool {
+    public var isAvailable: Bool {
         FileManager.default.fileExists(atPath: installation.authFile.path)
     }
 
-    func loadSnapshot() async throws -> AgentQuotaSnapshot {
+    public func loadSnapshot() async throws -> AgentQuotaSnapshot {
         let installation = installation
         let credentials = try await Task.detached(priority: .userInitiated) {
             try loadCredentialsSynchronously(for: installation)
@@ -64,7 +68,7 @@ struct CodexQuotaService: Sendable {
         )
     }
 
-    func decodeSnapshot(
+    public func decodeSnapshot(
         from data: Data,
         accountLabel: String,
         updatedAt: Date
@@ -142,7 +146,7 @@ struct CodexQuotaService: Sendable {
         return CodexAuthCredentials(accessToken: accessToken, accountID: accountID, accountLabel: accountLabel)
     }
 
-    func preferredAccountLabel(idToken: String?, fallbackAccountID: String) -> String {
+    public func preferredAccountLabel(idToken: String?, fallbackAccountID: String) -> String {
         if let claims = decodeIDTokenClaims(from: idToken) {
             if let email = claims.email?.trimmingCharacters(in: .whitespacesAndNewlines), !email.isEmpty {
                 return email
@@ -192,7 +196,7 @@ struct CodexQuotaService: Sendable {
     }
 }
 
-enum CodexQuotaError: LocalizedError, Equatable {
+public enum CodexQuotaError: LocalizedError, Equatable {
     case missingCodexDirectory(String)
     case unsupportedAuthMode
     case missingAccessToken
@@ -201,7 +205,7 @@ enum CodexQuotaError: LocalizedError, Equatable {
     case httpStatus(Int, message: String)
     case noQuotaInResponse
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case let .missingCodexDirectory(path):
             return "Codex root not found at \(path)."

@@ -1,5 +1,9 @@
 import SwiftUI
 
+#if canImport(AgentBarCore)
+import AgentBarCore
+#endif
+
 struct SettingsView: View {
     let model: AppModel
     private let providerColumns = [

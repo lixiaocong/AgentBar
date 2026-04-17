@@ -1,13 +1,17 @@
 import AppKit
 import SwiftUI
 
+#if canImport(AgentBarCore)
+import AgentBarCore
+#endif
+
 struct MenuBarView: View {
     let model: AppModel
     let openSettingsAction: () -> Void
     let onPreferredSizeChange: @MainActor (CGSize) -> Void
 
-    static let minimumContentSize = CGSize(width: 360, height: 260)
-    private let providerColumnWidth: CGFloat = 300
+    static let minimumContentSize = CGSize(width: 280, height: 180)
+    private let providerColumnWidth: CGFloat = 240
 
     init(
         model: AppModel,
@@ -22,12 +26,20 @@ struct MenuBarView: View {
     var body: some View {
         let visibleProviders = model.availableProviders
 
-        ScrollView([.horizontal, .vertical]) {
-            content(visibleProviders: visibleProviders)
-                .fixedSize(horizontal: true, vertical: true)
-            .padding(12)
-            .background(contentSizeReader)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView([.horizontal, .vertical]) {
+                content(visibleProviders: visibleProviders)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(12)
+            }
+
+            Divider()
+
+            controls
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
         }
+        .background(contentSizeReader)
         .frame(
             minWidth: Self.minimumContentSize.width,
             minHeight: Self.minimumContentSize.height,
@@ -50,10 +62,8 @@ struct MenuBarView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Divider()
             } else if model.snapshots.isEmpty && visibleProviders.allSatisfy({ model.errorMessage(for: $0) == nil }) {
                 ProgressView("Loading agent usage…")
-                Divider()
             } else {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(visibleProviders) { provider in
@@ -61,11 +71,7 @@ struct MenuBarView: View {
                     }
                 }
                 .padding(.vertical, 2)
-
-                Divider()
             }
-
-            controls
         }
     }
 
@@ -77,10 +83,7 @@ struct MenuBarView: View {
             providerColumnHeader(provider, accountCount: statuses.count)
 
             if statuses.isEmpty {
-                Text("No configured accounts are visible for this provider.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                providerPlaceholder(provider)
             } else {
                 ForEach(statuses) { status in
                     accountSection(status)
@@ -159,10 +162,28 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
+    private func providerPlaceholder(_ provider: AgentProviderKind) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let error = model.errorMessage(for: provider) {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("No configured accounts are visible for this provider.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 2)
+    }
+
+    @ViewBuilder
     private func accountSection(_ status: AgentAccountStatus) -> some View {
         let style = providerHeaderStyle(for: status.provider)
 
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             accountHeader(status, snapshot: status.snapshot)
 
             if let snapshot = status.snapshot {
@@ -171,31 +192,19 @@ struct MenuBarView: View {
                 }
 
                 if snapshot.metrics.isEmpty {
-                    Text("Local auth was detected for this provider, but AgentBar does not have quota metrics for it yet.")
+                    Text("Local auth detected, but no quota metrics are available.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                detailRow(label: "Config", value: status.displayPath)
-                detailRow(label: "Source", value: snapshot.sourceSummary)
-                if let planType = snapshot.planType {
-                    detailRow(label: "Plan", value: formattedPlan(planType))
-                }
-                if let modelName = snapshot.modelName {
-                    detailRow(label: "Model", value: modelName)
-                }
-                detailRow(label: "Updated", value: snapshot.updatedAt.formatted(date: .abbreviated, time: .shortened))
             } else if let error = status.errorMessage {
                 Text(error)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                detailRow(label: "Config", value: status.displayPath)
             } else {
                 ProgressView("Loading account usage…")
                     .controlSize(.small)
-                detailRow(label: "Config", value: status.displayPath)
             }
         }
         .padding(10)
@@ -212,15 +221,16 @@ struct MenuBarView: View {
         _ status: AgentAccountStatus,
         snapshot: AgentQuotaSnapshot?
     ) -> some View {
+        let style = providerHeaderStyle(for: status.provider)
+
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(snapshot?.accountLabel ?? "Configured account")
                     .font(.subheadline.weight(.semibold))
 
-                Text(status.displayPath)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(status.provider.title)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(style.tint)
             }
 
             Spacer()
@@ -239,6 +249,20 @@ struct MenuBarView: View {
                         .font(.system(size: 16, weight: .bold, design: .rounded))
 
                     Text("linked")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                } else if status.errorMessage != nil {
+                    Text("!")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+
+                    Text("error")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("...")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+
+                    Text("loading")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -285,44 +309,24 @@ struct MenuBarView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button(model.isRefreshing ? "Refreshing..." : "Refresh Now") {
+        HStack(spacing: 8) {
+            Button(model.isRefreshing ? "Refreshing…" : "Refresh") {
                 model.refreshNow()
             }
             .disabled(model.isRefreshing)
 
             Button("Settings…") {
-                logInfo("Settings button pressed")
                 openSettingsAction()
             }
 
-            Divider()
+            Spacer(minLength: 0)
 
             Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
         }
-    }
-
-    @ViewBuilder
-    private func detailRow(label: String, value: String) -> some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .multilineTextAlignment(.trailing)
-        }
-        .font(.caption)
-    }
-
-    private func formattedPlan(_ planType: String?) -> String {
-        guard let planType, !planType.isEmpty else {
-            return "Unknown"
-        }
-
-        return planType == planType.lowercased() ? planType.capitalized : planType
+        .controlSize(.small)
     }
 
     private func providerHeaderStyle(for provider: AgentProviderKind) -> (

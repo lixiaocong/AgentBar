@@ -1,30 +1,34 @@
 import Foundation
 import os
 
-struct ClaudeCLIInstallation: Sendable {
-    let configDirectory: URL
+public struct ClaudeCLIInstallation: Sendable {
+    public let configDirectory: URL
 
-    static let `default` = ClaudeCLIInstallation(
+    public static let `default` = ClaudeCLIInstallation(
         configDirectory: URL(fileURLWithPath: NSString(string: "~/.config/claude-code").expandingTildeInPath)
     )
 
-    var authFile: URL {
+    public init(configDirectory: URL) {
+        self.configDirectory = configDirectory
+    }
+
+    public var authFile: URL {
         configDirectory.appending(path: "auth.json")
     }
 }
 
-struct ClaudeQuotaService: Sendable {
-    let installation: ClaudeCLIInstallation
+public struct ClaudeQuotaService: Sendable {
+    public let installation: ClaudeCLIInstallation
 
-    init(installation: ClaudeCLIInstallation = .default) {
+    public init(installation: ClaudeCLIInstallation = .default) {
         self.installation = installation
     }
 
-    var isAvailable: Bool {
+    public var isAvailable: Bool {
         FileManager.default.fileExists(atPath: installation.authFile.path)
     }
 
-    func loadSnapshot() async throws -> AgentQuotaSnapshot {
+    public func loadSnapshot() async throws -> AgentQuotaSnapshot {
         let installation = installation
         let data = try await Task.detached(priority: .userInitiated) {
             try loadAuthDataSynchronously(for: installation)
@@ -33,7 +37,7 @@ struct ClaudeQuotaService: Sendable {
         return try decodeSnapshot(from: data, updatedAt: Date())
     }
 
-    func decodeSnapshot(from data: Data, updatedAt: Date) throws -> AgentQuotaSnapshot {
+    public func decodeSnapshot(from data: Data, updatedAt: Date) throws -> AgentQuotaSnapshot {
         let payload = try decodeAuthPayload(from: data)
         return buildSnapshot(from: payload, updatedAt: updatedAt)
     }

@@ -3,24 +3,29 @@ import os
 
 // MARK: - Installation
 
-struct GeminiCLIInstallation: Sendable {
-    let configDirectory: URL
-    let executableLocations: [URL]
+public struct GeminiCLIInstallation: Sendable {
+    public let configDirectory: URL
+    public let executableLocations: [URL]
 
-    static let defaultExecutableLocations = [
+    public static let defaultExecutableLocations = [
         URL(fileURLWithPath: "/opt/homebrew/bin/gemini"),
         URL(fileURLWithPath: "/usr/local/bin/gemini"),
     ]
 
-    static let `default` = GeminiCLIInstallation(
+    public static let `default` = GeminiCLIInstallation(
         configDirectory: URL(fileURLWithPath: NSString(string: "~/.gemini").expandingTildeInPath),
         executableLocations: Self.defaultExecutableLocations
     )
 
-    var oauthCredsFile: URL { configDirectory.appending(path: "oauth_creds.json") }
-    var googleAccountsFile: URL { configDirectory.appending(path: "google_accounts.json") }
+    public init(configDirectory: URL, executableLocations: [URL]) {
+        self.configDirectory = configDirectory
+        self.executableLocations = executableLocations
+    }
 
-    var oauthClientSourceCandidates: [URL] {
+    public var oauthCredsFile: URL { configDirectory.appending(path: "oauth_creds.json") }
+    public var googleAccountsFile: URL { configDirectory.appending(path: "google_accounts.json") }
+
+    public var oauthClientSourceCandidates: [URL] {
         var candidates: [URL] = []
 
         for executable in executableLocations {
@@ -69,18 +74,18 @@ struct GeminiCLIInstallation: Sendable {
 
 // MARK: - Service
 
-struct GeminiQuotaService: Sendable {
-    let installation: GeminiCLIInstallation
+public struct GeminiQuotaService: Sendable {
+    public let installation: GeminiCLIInstallation
 
-    init(installation: GeminiCLIInstallation = .default) {
+    public init(installation: GeminiCLIInstallation = .default) {
         self.installation = installation
     }
 
-    var isAvailable: Bool {
+    public var isAvailable: Bool {
         FileManager.default.fileExists(atPath: installation.oauthCredsFile.path)
     }
 
-    func loadSnapshot() async throws -> AgentQuotaSnapshot {
+    public func loadSnapshot() async throws -> AgentQuotaSnapshot {
         let installation = installation
         let credentials = try await Task.detached(priority: .userInitiated) {
             try loadCredentialsSynchronously(for: installation)
@@ -99,7 +104,7 @@ struct GeminiQuotaService: Sendable {
     }
 
     /// Exposed for unit tests — decodes loadCodeAssist + retrieveUserQuota payloads directly.
-    func decodeSnapshot(
+    public func decodeSnapshot(
         codeAssistData: Data,
         quotaData: Data,
         accountLabel: String,
@@ -344,7 +349,7 @@ struct GeminiQuotaService: Sendable {
         throw GeminiQuotaError.missingOAuthClientMetadata
     }
 
-    static func parseOAuthClientConfiguration(source: String) throws -> GeminiOAuthClientConfiguration {
+    public static func parseOAuthClientConfiguration(source: String) throws -> GeminiOAuthClientConfiguration {
         guard
             let clientID = extractJavaScriptConstant(named: "OAUTH_CLIENT_ID", from: source),
             let clientSecret = extractJavaScriptConstant(named: "OAUTH_CLIENT_SECRET", from: source)
@@ -438,7 +443,7 @@ struct GeminiQuotaService: Sendable {
 
 // MARK: - Errors
 
-enum GeminiQuotaError: LocalizedError, Equatable {
+public enum GeminiQuotaError: LocalizedError, Equatable {
     case missingCredentialsFile(String)
     case missingAccessToken
     case missingRefreshToken
@@ -447,7 +452,7 @@ enum GeminiQuotaError: LocalizedError, Equatable {
     case invalidResponse
     case httpStatus(Int, message: String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case let .missingCredentialsFile(path):
             return "Gemini credentials not found at \(path). Run `gemini` and sign in first."
@@ -487,9 +492,14 @@ private struct GoogleTokenResponse: Decodable {
     }
 }
 
-struct GeminiOAuthClientConfiguration: Equatable, Sendable {
-    let clientID: String
-    let clientSecret: String
+public struct GeminiOAuthClientConfiguration: Equatable, Sendable {
+    public let clientID: String
+    public let clientSecret: String
+
+    public init(clientID: String, clientSecret: String) {
+        self.clientID = clientID
+        self.clientSecret = clientSecret
+    }
 }
 
 struct GeminiCredentials: Sendable {

@@ -2,6 +2,14 @@ import AppKit
 import Foundation
 import os
 
+#if canImport(AgentBarCore)
+import AgentBarCore
+#endif
+
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
+
 @MainActor
 @Observable
 final class AppModel {
@@ -360,6 +368,8 @@ final class AppModel {
         } else {
             accountErrorsByID.removeValue(forKey: account.id)
         }
+
+        persistWidgetState()
     }
 
     private func startAutoRefresh() {
@@ -383,6 +393,7 @@ final class AppModel {
     private func refreshProviderAvailability() {
         pruneStoredAccountResults()
         providerAvailability = providerAvailabilityOverride?() ?? computedProviderAvailability()
+        persistWidgetState()
     }
 
     private func computedProviderAvailability() -> AgentProviderAvailability {
@@ -415,27 +426,7 @@ final class AppModel {
     }
 
     private func isConfiguredAccountAvailable(_ account: ConfiguredAgentAccount) -> Bool {
-        switch account.provider {
-        case .codex:
-            return CodexQuotaService(
-                installation: CodexInstallation(rootDirectory: account.directory.url)
-            ).isAvailable
-        case .githubCopilot:
-            return GitHubCopilotQuotaService(
-                installation: GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
-            ).isAvailable
-        case .gemini:
-            return GeminiQuotaService(
-                installation: GeminiCLIInstallation(
-                    configDirectory: account.directory.url,
-                    executableLocations: GeminiCLIInstallation.defaultExecutableLocations
-                )
-            ).isAvailable
-        case .claude:
-            return ClaudeQuotaService(
-                installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
-            ).isAvailable
-        }
+        AgentAccountSnapshotLoader.isAvailable(account)
     }
 
     private func pruneStoredAccountResults() {
@@ -536,27 +527,7 @@ final class AppModel {
     }
 
     private static func loadSnapshot(for account: ConfiguredAgentAccount) async throws -> AgentQuotaSnapshot {
-        switch account.provider {
-        case .codex:
-            return try await CodexQuotaService(
-                installation: CodexInstallation(rootDirectory: account.directory.url)
-            ).loadSnapshot()
-        case .githubCopilot:
-            return try await GitHubCopilotQuotaService(
-                installation: GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
-            ).loadSnapshot()
-        case .gemini:
-            return try await GeminiQuotaService(
-                installation: GeminiCLIInstallation(
-                    configDirectory: account.directory.url,
-                    executableLocations: GeminiCLIInstallation.defaultExecutableLocations
-                )
-            ).loadSnapshot()
-        case .claude:
-            return try await ClaudeQuotaService(
-                installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
-            ).loadSnapshot()
-        }
+        try await AgentAccountSnapshotLoader.loadSnapshot(for: account)
     }
 
     private func menuBarSummarySegment(
@@ -660,6 +631,38 @@ final class AppModel {
     private enum MenuBarValueStyle {
         case percent
         case remainingLabel
+    }
+
+    private func persistWidgetState() {
+        do {
+            try AgentWidgetStateStore().save(currentWidgetState())
+        } catch {
+            logError("[Widget] Failed to save widget state: \(error.localizedDescription)")
+        }
+
+        #if canImport(WidgetKit)
+        if #available(macOS 14.0, *) {
+            WidgetCenter.shared.reloadTimelines(ofKind: AgentBarWidgetConstants.kind)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        #endif
+    }
+
+    private func currentWidgetState() -> AgentWidgetState {
+        AgentWidgetState(
+            generatedAt: Date(),
+            providers: AgentProviderKind.allCases.flatMap { provider in
+                visibleAccountStatuses(for: provider).map { status in
+                    AgentWidgetProviderState(
+                        id: status.id,
+                        provider: provider,
+                        snapshot: status.snapshot,
+                        errorMessage: status.errorMessage,
+                        isAvailable: status.credentialsDetected
+                    )
+                }
+            }
+        )
     }
 
     enum AddConfiguredAccountDirectoryResult: Equatable {

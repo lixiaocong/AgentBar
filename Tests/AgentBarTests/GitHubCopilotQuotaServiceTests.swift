@@ -1,6 +1,6 @@
+import AgentBarCore
 import Foundation
 import Testing
-@testable import AgentBar
 
 @Test
 func decodesGitHubCopilotUsagePayload() throws {
@@ -95,4 +95,3 @@ func copilotUsageWhenFullyConsumed() throws {
     #expect(snapshot.metrics.first?.usedLabel == "50/50 used")
     #expect(snapshot.metrics.first?.remainingLabel == "0 left")
 }
-

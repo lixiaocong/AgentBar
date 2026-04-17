@@ -1,10 +1,22 @@
 # AgentBar
 
-Minimal macOS menu bar app for tracking local coding-agent usage and account status.
+Minimal macOS menu bar app for tracking local coding-agent usage and account status, with a desktop widget for quick at-a-glance viewing.
 
 > This app was generated entirely by coding agents.
 
 AgentBar detects supported providers automatically from local CLI or IDE login files and displays them side by side in the menu bar popover. Providers without local credentials stay hidden.
+
+## Desktop Widget
+
+AgentBar now bundles a native macOS desktop widget. After installing `build/AgentBar.app`, add it from the widget gallery and place it on the desktop to see Codex, GitHub Copilot, Gemini, and Claude side by side without opening the menu bar popover.
+
+For the most reliable widget discovery flow, use:
+
+```bash
+./scripts/install-app.sh
+```
+
+That builds the app, installs it to `/Applications/AgentBar.app`, registers it with LaunchServices, and opens it once so macOS can pick up the embedded widget extension.
 
 ## Main UI
 

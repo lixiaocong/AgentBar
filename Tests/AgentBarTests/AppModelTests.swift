@@ -1,3 +1,4 @@
+import AgentBarCore
 import Foundation
 import Testing
 @testable import AgentBar

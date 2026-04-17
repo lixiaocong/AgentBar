@@ -1,0 +1,46 @@
+name: AgentBar
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+targets:
+  AgentBar:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/AgentBar
+      - path: Sources/AgentBarCore
+    resources:
+      - path: Resources/AppIcon.icns
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.app
+        PRODUCT_NAME: AgentBar
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Resources/AgentBar.entitlements
+        SWIFT_EMIT_LOC_STRINGS: NO
+    dependencies:
+      - target: AgentBarWidgetExtension
+        embed: true
+  AgentBarWidgetExtension:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/AgentBarWidgetExtension
+      - path: Sources/AgentBarCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.app.widget
+        PRODUCT_NAME: AgentBarWidgetExtension
+        INFOPLIST_FILE: Resources/WidgetExtensionInfo.plist
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_ENTITLEMENTS: Resources/AgentBarWidget.entitlements
+        SWIFT_EMIT_LOC_STRINGS: NO

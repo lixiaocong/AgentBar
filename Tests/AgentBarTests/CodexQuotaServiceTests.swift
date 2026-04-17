@@ -1,6 +1,6 @@
+import AgentBarCore
 import Foundation
 import Testing
-@testable import AgentBar
 
 @Test
 func decodesCodexCloudUsagePayload() throws {
