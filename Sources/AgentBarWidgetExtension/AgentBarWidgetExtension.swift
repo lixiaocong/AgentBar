@@ -71,7 +71,8 @@ struct AgentBarDesktopWidget: Widget {
         }
         .configurationDisplayName("Agent Bar")
         .description("See Codex, Copilot, Gemini, and Claude usage on your desktop.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .systemExtraLarge])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .contentMarginsDisabled()
     }
 }
 
@@ -90,7 +91,7 @@ struct AgentBarDesktopWidgetView: View {
             1
         case .systemMedium:
             2
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             2
         @unknown default:
             2
@@ -103,7 +104,7 @@ struct AgentBarDesktopWidgetView: View {
             1
         case .systemMedium:
             2
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             4
         @unknown default:
             4
@@ -118,7 +119,7 @@ struct AgentBarDesktopWidgetView: View {
         switch family {
         case .systemSmall, .systemMedium:
             return prioritizedProviders
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             return entry.state.sortedProviders
         @unknown default:
             return entry.state.sortedProviders
@@ -148,7 +149,7 @@ struct AgentBarDesktopWidgetView: View {
             0
         case .systemMedium:
             10
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             12
         @unknown default:
             10
@@ -158,13 +159,13 @@ struct AgentBarDesktopWidgetView: View {
     private var widgetPadding: CGFloat {
         switch family {
         case .systemSmall:
-            4
+            8
         case .systemMedium:
             10
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             12
         @unknown default:
-            14
+            10
         }
     }
 
@@ -204,7 +205,7 @@ struct AgentBarDesktopWidgetView: View {
                 }
             case .systemMedium:
                 mediumLayout(size: size)
-            case .systemLarge, .systemExtraLarge:
+            case .systemLarge:
                 largeLayout(size: size)
             @unknown default:
                 largeLayout(size: size)
@@ -213,39 +214,40 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func mediumLayout(size: CGSize) -> some View {
-        return HStack(alignment: .top, spacing: gridSpacing) {
+        return HStack(alignment: .center, spacing: gridSpacing) {
             ForEach(visibleProviders) { providerState in
                 providerCard(providerState)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if visibleProviders.count == 1 {
                 Spacer(minLength: 0)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private func largeLayout(size: CGSize) -> some View {
-        let side = max(0, min((size.width - gridSpacing) / 2, (size.height - gridSpacing) / 2))
         let firstRow = Array(visibleProviders.prefix(2))
         let secondRow = Array(visibleProviders.dropFirst(2).prefix(2))
 
-        return VStack(alignment: .leading, spacing: gridSpacing) {
-            cardRow(firstRow, side: side)
+        return VStack(alignment: .center, spacing: gridSpacing) {
+            cardRow(firstRow)
 
             if !secondRow.isEmpty {
-                cardRow(secondRow, side: side)
+                cardRow(secondRow)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
-    private func cardRow(_ states: [AgentWidgetProviderState], side: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: gridSpacing) {
+    private func cardRow(_ states: [AgentWidgetProviderState]) -> some View {
+        HStack(alignment: .center, spacing: gridSpacing) {
             ForEach(states) { providerState in
                 providerCard(providerState)
-                    .frame(width: side, height: side, alignment: .topLeading)
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if states.count == 1 {
@@ -277,18 +279,29 @@ struct AgentBarDesktopWidgetView: View {
                     .lineLimit(1)
             }
 
-            if let metric = state.snapshot?.highlightMetric {
-                ProgressView(value: metric.remainingPercent, total: 100)
-                    .tint(palette.tint)
+            if let metrics = state.snapshot?.metrics, !metrics.isEmpty {
+                VStack(alignment: .leading, spacing: metrics.count > 2 ? 6 : 10) {
+                    ForEach(metrics.prefix(4)) { metric in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .lastTextBaseline) {
+                                Text(metric.title)
+                                    .font(.system(size: metrics.count > 2 ? 9 : 11, weight: .semibold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
 
-                Text(metric.title)
-                    .font(metricTitleFont)
-                    .lineLimit(family == .systemSmall ? 2 : 1)
+                                Spacer(minLength: 4)
 
-                Text(metric.remainingLabel)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                                Text(metric.remainingLabel)
+                                    .font(.system(size: metrics.count > 2 ? 8 : 10, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            ProgressView(value: metric.remainingPercent, total: 100)
+                                .tint(palette.tint)
+                        }
+                    }
+                }
             } else if let snapshot = state.snapshot {
                 Text(snapshot.accountLabel)
                     .font(.caption.weight(.semibold))
@@ -360,7 +373,7 @@ struct AgentBarDesktopWidgetView: View {
             13
         case .systemMedium:
             14
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             16
         @unknown default:
             12
@@ -373,7 +386,7 @@ struct AgentBarDesktopWidgetView: View {
             7
         case .systemMedium:
             10
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             12
         @unknown default:
             8
@@ -386,7 +399,7 @@ struct AgentBarDesktopWidgetView: View {
             0
         case .systemMedium:
             118
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             124
         @unknown default:
             118
@@ -394,16 +407,7 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private var maximumCardHeight: CGFloat? {
-        switch family {
-        case .systemSmall:
-            .infinity
-        case .systemMedium:
-            .infinity
-        case .systemLarge, .systemExtraLarge:
-            nil
-        @unknown default:
-            nil
-        }
+        .infinity
     }
 
     private var primaryValueFont: Font {
@@ -412,7 +416,7 @@ struct AgentBarDesktopWidgetView: View {
             .system(size: 22, weight: .bold, design: .rounded)
         case .systemMedium:
             .system(size: 18, weight: .bold, design: .rounded)
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             .system(size: 22, weight: .bold, design: .rounded)
         @unknown default:
             .system(size: 16, weight: .bold, design: .rounded)
@@ -425,7 +429,7 @@ struct AgentBarDesktopWidgetView: View {
             .caption.weight(.semibold)
         case .systemMedium:
             .footnote.weight(.semibold)
-        case .systemLarge, .systemExtraLarge:
+        case .systemLarge:
             .callout.weight(.semibold)
         @unknown default:
             .caption.weight(.semibold)

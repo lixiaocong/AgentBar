@@ -66,6 +66,8 @@ struct SettingsView: View {
                 .disabled(model.isRefreshing)
             }
         }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
         .sheet(item: $addAccountProvider) { provider in
             AddAccountSheet(provider: provider, model: model)
         }
@@ -249,6 +251,8 @@ private struct AddAccountSheet: View {
         }
         .padding(20)
         .frame(width: 520)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
     }
 
     private func submit() {

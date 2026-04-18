@@ -310,10 +310,6 @@ struct MenuBarView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            Button(model.isRefreshing ? "Refreshing…" : "Refresh") {
-                model.refreshNow()
-            }
-            .disabled(model.isRefreshing)
 
             Button("Settings…") {
                 openSettingsAction()
@@ -326,7 +322,8 @@ struct MenuBarView: View {
             }
             .keyboardShortcut("q")
         }
-        .controlSize(.small)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
     }
 
     private func providerHeaderStyle(for provider: AgentProviderKind) -> (
