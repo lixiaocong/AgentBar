@@ -15,8 +15,10 @@ targets:
     sources:
       - path: Sources/AgentBar
       - path: Sources/AgentBarCore
-    resources:
       - path: Resources/AppIcon.icns
+        buildPhase: resources
+      - path: Resources/AppIcon.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.app
@@ -35,6 +37,10 @@ targets:
     sources:
       - path: Sources/AgentBarWidgetExtension
       - path: Sources/AgentBarCore
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
+      - path: Resources/AppIcon.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.app.widget

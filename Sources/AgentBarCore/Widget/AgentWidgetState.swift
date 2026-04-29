@@ -100,12 +100,13 @@ public struct AgentWidgetStateStore {
     }
 
     public func load() throws -> AgentWidgetState {
+        var loadedStates: [AgentWidgetState] = []
         var lastError: Error?
 
         if let sharedDefaults,
            let data = sharedDefaults.data(forKey: AgentBarWidgetConstants.snapshotDefaultsKey) {
             do {
-                return try Self.decoder.decode(AgentWidgetState.self, from: data)
+                loadedStates.append(try Self.decoder.decode(AgentWidgetState.self, from: data))
             } catch {
                 lastError = error
             }
@@ -115,10 +116,14 @@ public struct AgentWidgetStateStore {
         where fileManager.fileExists(atPath: fileURL.path) {
             do {
                 let data = try Data(contentsOf: fileURL)
-                return try Self.decoder.decode(AgentWidgetState.self, from: data)
+                loadedStates.append(try Self.decoder.decode(AgentWidgetState.self, from: data))
             } catch {
                 lastError = error
             }
+        }
+
+        if let newestState = Self.newestState(in: loadedStates) {
+            return newestState
         }
 
         throw lastError ?? CocoaError(.fileReadNoSuchFile)
@@ -171,6 +176,12 @@ public struct AgentWidgetStateStore {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+
+    static func newestState(in states: [AgentWidgetState]) -> AgentWidgetState? {
+        states.max { lhs, rhs in
+            lhs.generatedAt < rhs.generatedAt
+        }
+    }
 
     private var sharedDefaults: UserDefaults? {
         UserDefaults(suiteName: AgentBarWidgetConstants.appGroupIdentifier)

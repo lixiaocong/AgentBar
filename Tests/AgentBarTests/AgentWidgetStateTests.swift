@@ -1,4 +1,4 @@
-import AgentBarCore
+@testable import AgentBarCore
 import Foundation
 import Testing
 
@@ -52,4 +52,36 @@ func widgetStateKeepsDuplicateProviderOrderStable() {
     )
 
     #expect(state.sortedProviders.map(\.id) == ["codex-2", "codex-1", "copilot-1"])
+}
+
+@Test
+func widgetStateStoreChoosesNewestGeneratedState() {
+    let olderState = AgentWidgetState(
+        generatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        providers: [
+            AgentWidgetProviderState(
+                id: "old-codex",
+                provider: .codex,
+                snapshot: nil,
+                errorMessage: nil,
+                isAvailable: true
+            ),
+        ]
+    )
+    let newerState = AgentWidgetState(
+        generatedAt: Date(timeIntervalSince1970: 1_700_000_600),
+        providers: [
+            AgentWidgetProviderState(
+                id: "new-codex",
+                provider: .codex,
+                snapshot: nil,
+                errorMessage: nil,
+                isAvailable: true
+            ),
+        ]
+    )
+
+    let selectedState = AgentWidgetStateStore.newestState(in: [olderState, newerState])
+
+    #expect(selectedState?.providers.map(\.id) == ["new-codex"])
 }

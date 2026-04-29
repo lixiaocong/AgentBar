@@ -17,6 +17,8 @@ ICON_FILE="$PROJECT_DIR/Resources/AppIcon.icns"
 APP_ENTITLEMENTS="$PROJECT_DIR/Resources/${APP_NAME}.entitlements"
 WIDGET_ENTITLEMENTS="$PROJECT_DIR/Resources/${APP_NAME}Widget.entitlements"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+PLISTBUDDY="/usr/libexec/PlistBuddy"
+BUILD_VERSION="$(date +%Y%m%d%H%M%S)"
 
 cd "$PROJECT_DIR"
 
@@ -73,6 +75,22 @@ if [ -f "$ICON_FILE" ]; then
     cp "$ICON_FILE" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 fi
 
+echo "==> Stamping bundle version $BUILD_VERSION"
+if [ -x "$PLISTBUDDY" ]; then
+    "$PLISTBUDDY" -c "Set :CFBundleVersion $BUILD_VERSION" "$APP_BUNDLE/Contents/Info.plist" || true
+fi
+
+if [ -f "$ICON_FILE" ] && [ -d "$APP_BUNDLE/Contents/PlugIns" ]; then
+    echo "==> Copying app icon into widget extension resources"
+    while IFS= read -r appex; do
+        mkdir -p "$appex/Contents/Resources"
+        cp "$ICON_FILE" "$appex/Contents/Resources/AppIcon.icns"
+        if [ -x "$PLISTBUDDY" ]; then
+            "$PLISTBUDDY" -c "Set :CFBundleVersion $BUILD_VERSION" "$appex/Contents/Info.plist" || true
+        fi
+    done < <(find "$APP_BUNDLE/Contents/PlugIns" -depth -name "*.appex" -print)
+fi
+
 if [ -d "$APP_BUNDLE/Contents/PlugIns" ]; then
     while IFS= read -r appex; do
         codesign --force --sign - --entitlements "$WIDGET_ENTITLEMENTS" "$appex"
@@ -96,6 +114,12 @@ if pgrep -f "$INSTALL_PATH/Contents/MacOS/$APP_NAME" >/dev/null 2>&1; then
 fi
 
 if [ -d "$INSTALL_PATH" ]; then
+    if command -v pluginkit >/dev/null 2>&1; then
+        while IFS= read -r appex; do
+            pluginkit -r "$appex" || true
+        done < <(find "$INSTALL_PATH/Contents/PlugIns" -depth -name "*.appex" -print 2>/dev/null)
+    fi
+
     echo "==> Replacing existing install"
     rm -rf "$INSTALL_PATH"
 fi
@@ -106,6 +130,13 @@ ditto "$APP_BUNDLE" "$INSTALL_PATH"
 if [ -x "$LSREGISTER" ]; then
     echo "==> Registering installed app with LaunchServices"
     "$LSREGISTER" -f -R -trusted "$INSTALL_PATH"
+fi
+
+if command -v pluginkit >/dev/null 2>&1; then
+    echo "==> Registering widget extension with PlugInKit"
+    while IFS= read -r appex; do
+        pluginkit -a "$appex" || true
+    done < <(find "$INSTALL_PATH/Contents/PlugIns" -depth -name "*.appex" -print)
 fi
 
 touch "$INSTALL_PATH"

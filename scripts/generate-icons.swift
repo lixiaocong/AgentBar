@@ -28,6 +28,8 @@ let fileManager = FileManager.default
 let projectURL = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
 let resourcesURL = projectURL.appendingPathComponent("Resources", isDirectory: true)
 let iconsetURL = resourcesURL.appendingPathComponent("AppIcon.iconset", isDirectory: true)
+let assetCatalogURL = resourcesURL.appendingPathComponent("AppIcon.xcassets", isDirectory: true)
+let appIconSetURL = assetCatalogURL.appendingPathComponent("AppIcon.appiconset", isDirectory: true)
 let icnsURL = resourcesURL.appendingPathComponent("AppIcon.icns")
 let previewURL = resourcesURL.appendingPathComponent("AppIcon-preview.png")
 
@@ -35,18 +37,29 @@ try fileManager.createDirectory(at: resourcesURL, withIntermediateDirectories: t
 if fileManager.fileExists(atPath: iconsetURL.path) {
     try fileManager.removeItem(at: iconsetURL)
 }
+if fileManager.fileExists(atPath: appIconSetURL.path) {
+    try fileManager.removeItem(at: appIconSetURL)
+}
 try fileManager.createDirectory(at: iconsetURL, withIntermediateDirectories: true)
+try fileManager.createDirectory(at: appIconSetURL, withIntermediateDirectories: true)
 
 for spec in specs {
     guard let data = renderIcon(size: spec.size) else {
         throw IconGenerationError.renderFailed(spec.size)
     }
     try data.write(to: iconsetURL.appendingPathComponent(spec.fileName))
+    try data.write(to: appIconSetURL.appendingPathComponent(spec.fileName))
 
     if spec.size == 1024 {
         try data.write(to: previewURL)
     }
 }
+
+try appIconContentsJSON().write(
+    to: appIconSetURL.appendingPathComponent("Contents.json"),
+    atomically: true,
+    encoding: .utf8
+)
 
 let iconutil = Process()
 iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
@@ -54,11 +67,36 @@ iconutil.arguments = ["-c", "icns", iconsetURL.path, "-o", icnsURL.path]
 try iconutil.run()
 iconutil.waitUntilExit()
 
-guard iconutil.terminationStatus == 0 else {
+if iconutil.terminationStatus == 0 {
+    print("Generated \(icnsURL.path)")
+} else if fileManager.fileExists(atPath: icnsURL.path) {
+    print("Warning: iconutil failed; keeping existing \(icnsURL.path)")
+} else {
     throw IconGenerationError.iconutilFailed(iconutil.terminationStatus)
 }
 
-print("Generated \(icnsURL.path)")
+func appIconContentsJSON() -> String {
+    """
+    {
+      "images" : [
+        { "filename" : "icon_16x16.png", "idiom" : "mac", "scale" : "1x", "size" : "16x16" },
+        { "filename" : "icon_16x16@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "16x16" },
+        { "filename" : "icon_32x32.png", "idiom" : "mac", "scale" : "1x", "size" : "32x32" },
+        { "filename" : "icon_32x32@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "32x32" },
+        { "filename" : "icon_128x128.png", "idiom" : "mac", "scale" : "1x", "size" : "128x128" },
+        { "filename" : "icon_128x128@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "128x128" },
+        { "filename" : "icon_256x256.png", "idiom" : "mac", "scale" : "1x", "size" : "256x256" },
+        { "filename" : "icon_256x256@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "256x256" },
+        { "filename" : "icon_512x512.png", "idiom" : "mac", "scale" : "1x", "size" : "512x512" },
+        { "filename" : "icon_512x512@2x.png", "idiom" : "mac", "scale" : "2x", "size" : "512x512" }
+      ],
+      "info" : {
+        "author" : "xcode",
+        "version" : 1
+      }
+    }
+    """
+}
 
 func renderIcon(size: Int) -> Data? {
     let bitmap = NSBitmapImageRep(

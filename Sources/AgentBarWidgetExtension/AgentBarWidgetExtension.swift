@@ -91,7 +91,7 @@ struct AgentBarDesktopWidgetView: View {
             1
         case .systemMedium:
             2
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             2
         @unknown default:
             2
@@ -104,7 +104,7 @@ struct AgentBarDesktopWidgetView: View {
             1
         case .systemMedium:
             2
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             4
         @unknown default:
             4
@@ -119,7 +119,7 @@ struct AgentBarDesktopWidgetView: View {
         switch family {
         case .systemSmall, .systemMedium:
             return prioritizedProviders
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             return entry.state.sortedProviders
         @unknown default:
             return entry.state.sortedProviders
@@ -149,7 +149,7 @@ struct AgentBarDesktopWidgetView: View {
             0
         case .systemMedium:
             10
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             12
         @unknown default:
             10
@@ -162,7 +162,7 @@ struct AgentBarDesktopWidgetView: View {
             8
         case .systemMedium:
             10
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             12
         @unknown default:
             10
@@ -205,7 +205,7 @@ struct AgentBarDesktopWidgetView: View {
                 }
             case .systemMedium:
                 mediumLayout(size: size)
-            case .systemLarge:
+            case .systemLarge, .systemExtraLarge:
                 largeLayout(size: size)
             @unknown default:
                 largeLayout(size: size)
@@ -258,6 +258,7 @@ struct AgentBarDesktopWidgetView: View {
 
     private func providerCard(_ state: AgentWidgetProviderState) -> some View {
         let palette = palette(for: state.provider)
+        let metrics = displayMetrics(for: state)
 
         return VStack(alignment: .leading, spacing: cardSpacing) {
             HStack(alignment: .top, spacing: 8) {
@@ -279,7 +280,7 @@ struct AgentBarDesktopWidgetView: View {
                     .lineLimit(1)
             }
 
-            if let metrics = state.snapshot?.metrics, !metrics.isEmpty {
+            if !metrics.isEmpty {
                 VStack(alignment: .leading, spacing: metrics.count > 2 ? 6 : 10) {
                     ForEach(metrics.prefix(4)) { metric in
                         VStack(alignment: .leading, spacing: 4) {
@@ -373,7 +374,7 @@ struct AgentBarDesktopWidgetView: View {
             13
         case .systemMedium:
             14
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             16
         @unknown default:
             12
@@ -386,7 +387,7 @@ struct AgentBarDesktopWidgetView: View {
             7
         case .systemMedium:
             10
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             12
         @unknown default:
             8
@@ -399,7 +400,7 @@ struct AgentBarDesktopWidgetView: View {
             0
         case .systemMedium:
             118
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             124
         @unknown default:
             118
@@ -416,7 +417,7 @@ struct AgentBarDesktopWidgetView: View {
             .system(size: 22, weight: .bold, design: .rounded)
         case .systemMedium:
             .system(size: 18, weight: .bold, design: .rounded)
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             .system(size: 22, weight: .bold, design: .rounded)
         @unknown default:
             .system(size: 16, weight: .bold, design: .rounded)
@@ -429,7 +430,7 @@ struct AgentBarDesktopWidgetView: View {
             .caption.weight(.semibold)
         case .systemMedium:
             .footnote.weight(.semibold)
-        case .systemLarge:
+        case .systemLarge, .systemExtraLarge:
             .callout.weight(.semibold)
         @unknown default:
             .caption.weight(.semibold)
@@ -437,7 +438,7 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func primaryValue(for state: AgentWidgetProviderState) -> String {
-        if let metric = state.snapshot?.highlightMetric {
+        if let metric = primaryMetric(for: state) {
             return metric.percentText
         }
 
@@ -457,7 +458,7 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func providerPriority(_ state: AgentWidgetProviderState) -> Double {
-        if let usedPercent = state.snapshot?.highlightMetric?.usedPercent {
+        if let usedPercent = primaryMetric(for: state)?.usedPercent {
             return -usedPercent
         }
 
@@ -470,6 +471,53 @@ struct AgentBarDesktopWidgetView: View {
         }
 
         return 3_000
+    }
+
+    private func primaryMetric(for state: AgentWidgetProviderState) -> AgentQuotaMetric? {
+        guard let snapshot = state.snapshot else {
+            return nil
+        }
+
+        if state.provider == .codex, let weeklyMetric = snapshot.metrics.first(where: isCodexWeeklyMetric) {
+            return weeklyMetric
+        }
+
+        return snapshot.highlightMetric
+    }
+
+    private func displayMetrics(for state: AgentWidgetProviderState) -> [AgentQuotaMetric] {
+        guard let metrics = state.snapshot?.metrics else {
+            return []
+        }
+
+        guard state.provider == .codex else {
+            return metrics
+        }
+
+        return metrics.enumerated()
+            .sorted { lhs, rhs in
+                let leftPriority = codexMetricDisplayPriority(lhs.element)
+                let rightPriority = codexMetricDisplayPriority(rhs.element)
+
+                if leftPriority != rightPriority {
+                    return leftPriority < rightPriority
+                }
+
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    private func codexMetricDisplayPriority(_ metric: AgentQuotaMetric) -> Int {
+        if isCodexWeeklyMetric(metric) {
+            return 0
+        }
+
+        return 1
+    }
+
+    private func isCodexWeeklyMetric(_ metric: AgentQuotaMetric) -> Bool {
+        metric.id == "window-10080" || metric.title.localizedCaseInsensitiveContains("7 day")
     }
 
     private func primaryValueColor(
