@@ -20,7 +20,21 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 PLISTBUDDY="/usr/libexec/PlistBuddy"
 BUILD_VERSION="$(date +%Y%m%d%H%M%S)"
 
+unregister_bundle() {
+    local bundle_path="$1"
+    if [ -x "$LSREGISTER" ] && [ -n "$bundle_path" ]; then
+        "$LSREGISTER" -u "$bundle_path" >/dev/null 2>&1 || true
+    fi
+}
+
 cd "$PROJECT_DIR"
+
+echo "==> Clearing stale AgentBar build registrations"
+unregister_bundle "$APP_BUNDLE"
+unregister_bundle "$DERIVED_DATA_DIR/Build/Products/Release/$APP_NAME.app"
+unregister_bundle "$DERIVED_DATA_DIR/Build/Products/Debug/$APP_NAME.app"
+unregister_bundle "$PROJECT_DIR/build/DerivedData/Build/Products/Release/$APP_NAME.app"
+unregister_bundle "$PROJECT_DIR/build/DerivedData/Build/Products/Debug/$APP_NAME.app"
 
 echo "==> Rendering app icon"
 if [ -f "$ICON_SCRIPT" ]; then
@@ -100,11 +114,6 @@ fi
 echo "==> Ad-hoc signing app bundle"
 codesign --force --sign - --entitlements "$APP_ENTITLEMENTS" "$APP_BUNDLE"
 
-if [ -x "$LSREGISTER" ]; then
-    echo "==> Registering app bundle with LaunchServices"
-    "$LSREGISTER" -f -R -trusted "$APP_BUNDLE"
-fi
-
 touch "$APP_BUNDLE"
 
 if pgrep -f "$INSTALL_PATH/Contents/MacOS/$APP_NAME" >/dev/null 2>&1; then
@@ -128,6 +137,10 @@ echo "==> Installing app bundle to $INSTALL_PATH"
 ditto "$APP_BUNDLE" "$INSTALL_PATH"
 
 if [ -x "$LSREGISTER" ]; then
+    echo "==> Removing temporary app bundles from LaunchServices"
+    unregister_bundle "$APP_BUNDLE"
+    unregister_bundle "$BUILT_APP"
+
     echo "==> Registering installed app with LaunchServices"
     "$LSREGISTER" -f -R -trusted "$INSTALL_PATH"
 fi
@@ -141,9 +154,14 @@ fi
 
 touch "$INSTALL_PATH"
 
+echo "==> Removing temporary app bundle"
+rm -rf "$APP_BUNDLE"
+
+echo "==> Removing temporary Xcode build products"
+rm -rf "$DERIVED_DATA_DIR"
+
 echo "==> Launching $APP_NAME"
 open "$INSTALL_PATH"
 
 echo "==> Done"
-echo "    App bundle: $APP_BUNDLE"
 echo "    Installed app: $INSTALL_PATH"

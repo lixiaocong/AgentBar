@@ -4,19 +4,14 @@ public enum AgentAccountSnapshotLoader {
     public static func isAvailable(_ account: ConfiguredAgentAccount) -> Bool {
         switch account.provider {
         case .codex:
-            return CodexQuotaService(
-                installation: CodexInstallation(rootDirectory: account.directory.url)
-            ).isAvailable
+            return CodexQuotaService(installation: codexInstallation(for: account)).isAvailable
         case .githubCopilot:
             return GitHubCopilotQuotaService(
-                installation: GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
+                installation: githubCopilotInstallation(for: account)
             ).isAvailable
         case .gemini:
             return GeminiQuotaService(
-                installation: GeminiCLIInstallation(
-                    configDirectory: account.directory.url,
-                    executableLocations: GeminiCLIInstallation.defaultExecutableLocations
-                )
+                installation: geminiInstallation(for: account)
             ).isAvailable
         case .claude:
             return ClaudeQuotaService(
@@ -30,25 +25,53 @@ public enum AgentAccountSnapshotLoader {
     ) async throws -> AgentQuotaSnapshot {
         switch account.provider {
         case .codex:
-            return try await CodexQuotaService(
-                installation: CodexInstallation(rootDirectory: account.directory.url)
-            ).loadSnapshot()
+            return try await CodexQuotaService(installation: codexInstallation(for: account)).loadSnapshot()
         case .githubCopilot:
             return try await GitHubCopilotQuotaService(
-                installation: GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
+                installation: githubCopilotInstallation(for: account)
             ).loadSnapshot()
         case .gemini:
             return try await GeminiQuotaService(
-                installation: GeminiCLIInstallation(
-                    configDirectory: account.directory.url,
-                    executableLocations: GeminiCLIInstallation.defaultExecutableLocations
-                )
+                installation: geminiInstallation(for: account)
             ).loadSnapshot()
         case .claude:
             return try await ClaudeQuotaService(
                 installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
             ).loadSnapshot()
         }
+    }
+
+    private static func codexInstallation(for account: ConfiguredAgentAccount) -> CodexInstallation {
+        if let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return CodexInstallation(rootDirectory: account.directory.url)
+    }
+
+    private static func githubCopilotInstallation(for account: ConfiguredAgentAccount) -> GitHubCopilotCLIInstallation {
+        if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: .githubCopilot
+        ) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return GitHubCopilotCLIInstallation(configDirectory: account.directory.url)
+    }
+
+    private static func geminiInstallation(for account: ConfiguredAgentAccount) -> GeminiCLIInstallation {
+        if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: .gemini
+        ) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return GeminiCLIInstallation(
+            configDirectory: account.directory.url,
+            executableLocations: GeminiCLIInstallation.defaultExecutableLocations
+        )
     }
 }
 

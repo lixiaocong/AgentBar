@@ -17,9 +17,7 @@ struct AgentBarApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(model: model)
-                .frame(width: 900, height: 680)
-                .padding(20)
+            EmptyView()
         }
     }
 }
@@ -43,17 +41,25 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController: settingsWindowController
         )
 
-        if ProcessInfo.processInfo.arguments.contains("--open-settings") {
-            logInfo("Launch argument requested settings window")
-            settingsWindowController.show()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            model.start()
         }
 
-        if ProcessInfo.processInfo.arguments.contains("--simulate-settings-button"),
-           let statusController {
+        if ProcessInfo.processInfo.arguments.contains("--open-settings") {
+            logInfo("Launch argument requested settings window")
+            showSettings()
+        }
+
+        if ProcessInfo.processInfo.arguments.contains("--simulate-settings-button") {
             logInfo("Launch argument requested simulated settings-button flow")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                statusController.openSettingsForTesting()
+                self.showSettings()
             }
         }
+    }
+
+    func showSettings() {
+        logInfo("Opening settings window")
+        settingsWindowController?.show()
     }
 }

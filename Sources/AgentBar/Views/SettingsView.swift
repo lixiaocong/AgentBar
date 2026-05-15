@@ -16,26 +16,26 @@ struct SettingsView: View {
 
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Agent Bar")
+                Text("Settings")
                     .font(.title2.weight(.semibold))
-
-                Text("Tracks quota usage for local coding agents. Each provider starts with its standard config directory, and you can add extra account directories below.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 GroupBox("Menu Bar") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker("Display format", selection: $model.menuBarDisplayMode) {
-                            ForEach(MenuBarDisplayMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
-                            }
+                        Stepper(
+                            value: $model.menuBarMaxDisplayedAccounts,
+                            in: AppModel.minimumMenuBarMaxDisplayedAccounts ... AppModel.maximumMenuBarMaxDisplayedAccounts
+                        ) {
+                            LabeledContent(
+                                "Menu bar accounts",
+                                value: "\(model.menuBarMaxDisplayedAccounts)"
+                            )
                         }
 
-                        Text(model.menuBarDisplayMode.detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        LabeledContent("Preview", value: model.menuBarDisplayMode.example)
+                        if model.hasExplicitMenuBarAccountSelection {
+                            Button("Use First Accounts Automatically") {
+                                model.resetMenuBarAccountSelection()
+                            }
+                        }
 
                         Stepper(
                             value: $model.refreshIntervalSeconds,
@@ -44,11 +44,6 @@ struct SettingsView: View {
                         ) {
                             LabeledContent("Update interval", value: "\(model.refreshIntervalSeconds) seconds")
                         }
-
-                        Text("Applies to all providers. Lower values make more frequent API requests.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(4)
@@ -59,11 +54,6 @@ struct SettingsView: View {
                         providerSettingsSection(provider)
                     }
                 }
-
-                Button(model.isRefreshing ? "Refreshing…" : "Refresh Now") {
-                    model.refreshNow()
-                }
-                .disabled(model.isRefreshing)
             }
         }
         .buttonStyle(.bordered)
@@ -76,26 +66,39 @@ struct SettingsView: View {
     @ViewBuilder
     private func providerSettingsSection(_ provider: AgentProviderKind) -> some View {
         let statuses = model.accountStatuses(for: provider)
+        let hasConfiguredAccounts = !statuses.isEmpty
 
         GroupBox(groupTitle(for: provider)) {
             VStack(alignment: .leading, spacing: 10) {
-                Text(description(for: provider))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if statuses.isEmpty {
-                    Text("No configured account directories for \(provider.title).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
+                if !statuses.isEmpty {
                     ForEach(statuses) { status in
                         accountRow(status)
                     }
                 }
 
-                Button("Add Account…") {
-                    addAccountProvider = provider
+                if model.supportsBrowserSignIn(for: provider) {
+                    Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
+                        model.signInWithBrowser(for: provider, forceAccountSelection: hasConfiguredAccounts)
+                    }
+                    .disabled(model.isLoginInProgress(for: provider))
+
+                    if let message = model.loginMessage(for: provider) {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let error = model.loginError(for: provider) {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else if provider == .claude {
+                    Button(hasConfiguredAccounts ? "Add Another Auth Directory..." : "Add Claude Auth Directory...") {
+                        addAccountProvider = provider
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -107,12 +110,16 @@ struct SettingsView: View {
     @ViewBuilder
     private func accountRow(_ status: AgentAccountStatus) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let snapshot = status.snapshot {
-                Text(snapshot.accountLabel)
+            if let label = status.displayLabel {
+                NonHyphenatingLabel(label)
                     .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
 
+            if let snapshot = status.snapshot {
                 if let plan = snapshot.planType {
-                    LabeledContent("Plan", value: formattedPlan(plan))
+                    LabeledContent("Plan", value: plan)
                         .font(.caption)
                 }
             } else if let error = status.errorMessage {
@@ -120,27 +127,19 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if status.credentialsDetected {
-                Text("Credentials detected. Refresh to load account details.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("No \(status.provider.credentialsFileDescription) found in this directory yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
-            Text(status.displayPath)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-
             HStack(spacing: 10) {
-                Button("Open") {
-                    model.openConfiguredAccountDirectory(status.account)
-                }
+                Toggle(
+                    "Menu Bar",
+                    isOn: Binding(
+                        get: { model.isAccountShownInMenuBar(status.account) },
+                        set: { model.setAccount(status.account, shownInMenuBar: $0) }
+                    )
+                )
+                .toggleStyle(.checkbox)
 
-                Button("Remove") {
+                Button("Sign Out") {
                     model.removeConfiguredAccount(status.account)
                 }
             }
@@ -171,22 +170,14 @@ struct SettingsView: View {
         }
     }
 
-    private func description(for provider: AgentProviderKind) -> String {
-        switch provider {
-        case .codex:
-            return "Uses \(provider.defaultAccountDirectoryDisplayPath) by default and reads `auth.json` from each configured directory."
-        case .githubCopilot:
-            return "Uses \(provider.defaultAccountDirectoryDisplayPath) by default and reads `apps.json` from each configured directory."
-        case .gemini:
-            return "Uses \(provider.defaultAccountDirectoryDisplayPath) by default and reads `oauth_creds.json` from each configured directory. Gemini CLI and Antigravity IDE share the same quota."
-        case .claude:
-            return "Uses \(provider.defaultAccountDirectoryDisplayPath) by default and reads `auth.json` from each configured directory."
+    private func signInButtonTitle(for provider: AgentProviderKind, hasConfiguredAccounts: Bool) -> String {
+        guard !model.isLoginInProgress(for: provider) else {
+            return "Signing In…"
         }
+
+        return hasConfiguredAccounts ? "Add Another Account…" : "Sign In with Browser…"
     }
 
-    private func formattedPlan(_ planType: String) -> String {
-        planType == planType.lowercased() ? planType.capitalized : planType
-    }
 }
 
 private struct AddAccountSheet: View {
@@ -201,11 +192,6 @@ private struct AddAccountSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add \(provider.title) Account")
                 .font(.title3.weight(.semibold))
-
-            Text("Paste a directory path directly or browse to it. Hidden folders like \(provider.defaultAccountDirectoryDisplayPath) work here.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Directory path")
@@ -263,6 +249,10 @@ private struct AddAccountSheet: View {
             errorMessage = "Enter a directory path."
         case .duplicate:
             errorMessage = "That directory is already configured."
+        case .browserLoginRequired:
+            errorMessage = "\(provider.title) accounts must be added with browser sign-in."
+        case .credentialsFileMissing(let path):
+            errorMessage = "No credentials file found at \(path)."
         }
     }
 }

@@ -1,8 +1,8 @@
 import Foundation
 
 public enum AgentBarWidgetConstants {
-    public static let appBundleIdentifier = "com.agentbar.app"
-    public static let widgetBundleIdentifier = "com.agentbar.app.widget"
+    public static let appBundleIdentifier = "com.agentbar.menu"
+    public static let widgetBundleIdentifier = "com.agentbar.menu.widget"
     public static let appGroupIdentifier = "group.com.agentbar.shared"
     public static let kind = "AgentBarDesktopWidget"
     public static let snapshotFilename = "widget-state.json"
@@ -212,41 +212,10 @@ public struct AgentWidgetStateStore {
             )
         }
 
-        urls.append(
-            contentsOf: deterministicContainerSnapshotURLs(
-                forBundleIdentifier: AgentBarWidgetConstants.widgetBundleIdentifier,
-                fileManager: fileManager
-            )
-        )
-        urls.append(
-            contentsOf: deterministicContainerSnapshotURLs(
-                forBundleIdentifier: AgentBarWidgetConstants.appBundleIdentifier,
-                fileManager: fileManager
-            )
-        )
         urls.append(legacySnapshotURL(fileManager: fileManager))
 
         var seen = Set<String>()
         return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
-    }
-
-    private static func deterministicContainerSnapshotURLs(
-        forBundleIdentifier bundleIdentifier: String,
-        fileManager: FileManager
-    ) -> [URL] {
-        let containerRoot = fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library/Containers", directoryHint: .isDirectory)
-            .appending(path: bundleIdentifier, directoryHint: .isDirectory)
-            .appending(path: "Data", directoryHint: .isDirectory)
-
-        return [
-            containerRoot
-                .appending(path: "Library/Application Support", directoryHint: .isDirectory)
-                .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
-                .appending(path: AgentBarWidgetConstants.snapshotFilename),
-            containerRoot
-                .appending(path: AgentBarWidgetConstants.snapshotFilename),
-        ]
     }
 
     private static func legacySnapshotURL(fileManager: FileManager) -> URL {

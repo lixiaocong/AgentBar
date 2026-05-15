@@ -143,17 +143,20 @@ public struct ConfiguredAgentAccount: Identifiable, Equatable, Sendable {
 
 public struct AgentAccountStatus: Identifiable, Equatable, Sendable {
     public let account: ConfiguredAgentAccount
+    public let accountLabel: String?
     public let snapshot: AgentQuotaSnapshot?
     public let errorMessage: String?
     public let credentialsDetected: Bool
 
     public init(
         account: ConfiguredAgentAccount,
+        accountLabel: String? = nil,
         snapshot: AgentQuotaSnapshot?,
         errorMessage: String?,
         credentialsDetected: Bool
     ) {
         self.account = account
+        self.accountLabel = accountLabel
         self.snapshot = snapshot
         self.errorMessage = errorMessage
         self.credentialsDetected = credentialsDetected
@@ -162,6 +165,7 @@ public struct AgentAccountStatus: Identifiable, Equatable, Sendable {
     public var id: String { account.id }
     public var provider: AgentProviderKind { account.provider }
     public var displayPath: String { account.displayPath }
+    public var displayLabel: String? { snapshot?.accountLabel ?? accountLabel }
 
     public var shouldDisplayInMenu: Bool {
         credentialsDetected || snapshot != nil || errorMessage != nil

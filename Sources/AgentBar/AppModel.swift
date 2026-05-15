@@ -13,31 +13,57 @@ import WidgetKit
 @MainActor
 @Observable
 final class AppModel {
-    static let shared = AppModel()
+    static let shared = AppModel(startImmediately: false, migrateLegacyUserDefaults: true)
     static let defaultRefreshIntervalSeconds = 10
     static let minimumRefreshIntervalSeconds = 5
     static let maximumRefreshIntervalSeconds = 300
     static let refreshIntervalStepSeconds = 5
+    static let defaultMenuBarMaxDisplayedAccounts = 2
+    static let minimumMenuBarMaxDisplayedAccounts = 1
+    static let maximumMenuBarMaxDisplayedAccounts = 3
 
-    private static let menuBarDisplayModeDefaultsKey = "menuBarDisplayMode"
+    private static let menuBarMaxDisplayedAccountsDefaultsKey = "menuBarMaxDisplayedAgents"
+    private static let menuBarSelectedAccountIDsDefaultsKey = "menuBarSelectedAccountIDs"
     private static let refreshIntervalDefaultsKey = "refreshIntervalSeconds"
     private static let configuredAccountDirectoriesDefaultsKeyPrefix = "configuredAccountDirectories."
+    private static let legacyAppBundleIdentifier = "com.agentbar.app"
+    private static let legacyUserDefaultsMigrationKey = "didMigrateLegacyUserDefaultsFromComAgentbarApp"
 
     private let userDefaults: UserDefaults
     private let autoRefreshEnabled: Bool
     private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
     private var refreshTask: Task<Void, Never>?
+    private var hasStarted = false
     private var needsRefreshAfterCurrentRun = false
     private var configuredDirectoriesByProvider: [AgentProviderKind: [ConfiguredAccountDirectory]]
     private var accountSnapshotsByID: [String: AgentQuotaSnapshot] = [:]
     private var accountErrorsByID: [String: String] = [:]
+    private var isMenuBarAccountSelectionExplicit = false
 
     var providerAvailability: AgentProviderAvailability
     var isRefreshing = false
-    var menuBarDisplayMode: MenuBarDisplayMode {
+    var isCodexLoginInProgress = false
+    var codexLoginError: String?
+    var providerLoginInProgress: Set<AgentProviderKind> = []
+    var providerLoginErrors: [AgentProviderKind: String] = [:]
+    var providerLoginMessages: [AgentProviderKind: String] = [:]
+    var menuBarMaxDisplayedAccounts: Int {
         didSet {
-            guard oldValue != menuBarDisplayMode else { return }
-            userDefaults.set(menuBarDisplayMode.rawValue, forKey: Self.menuBarDisplayModeDefaultsKey)
+            let normalized = Self.normalizedMenuBarMaxDisplayedAccounts(menuBarMaxDisplayedAccounts)
+            if menuBarMaxDisplayedAccounts != normalized {
+                menuBarMaxDisplayedAccounts = normalized
+                return
+            }
+
+            guard oldValue != menuBarMaxDisplayedAccounts else { return }
+            userDefaults.set(menuBarMaxDisplayedAccounts, forKey: Self.menuBarMaxDisplayedAccountsDefaultsKey)
+            trimMenuBarSelectedAccountIDsToDisplayLimit()
+        }
+    }
+    var menuBarSelectedAccountIDs: [String] = [] {
+        didSet {
+            guard oldValue != menuBarSelectedAccountIDs else { return }
+            persistMenuBarAccountSelection()
         }
     }
     var refreshIntervalSeconds: Int {
@@ -97,25 +123,40 @@ final class AppModel {
     init(
         userDefaults: UserDefaults = .standard,
         providerAvailabilityResolver: (@Sendable () -> AgentProviderAvailability)? = nil,
-        startImmediately: Bool = true
+        startImmediately: Bool = true,
+        migrateLegacyUserDefaults: Bool = false
     ) {
+        if migrateLegacyUserDefaults {
+            Self.migrateLegacyUserDefaults(to: userDefaults)
+        }
+
         self.userDefaults = userDefaults
         self.autoRefreshEnabled = startImmediately
         self.providerAvailabilityOverride = providerAvailabilityResolver
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
         self.providerAvailability = .none
-        menuBarDisplayMode = MenuBarDisplayMode.fromStoredValue(
-            userDefaults.string(forKey: Self.menuBarDisplayModeDefaultsKey)
+        menuBarMaxDisplayedAccounts = Self.normalizedMenuBarMaxDisplayedAccounts(
+            userDefaults.object(forKey: Self.menuBarMaxDisplayedAccountsDefaultsKey) as? Int
+        )
+        isMenuBarAccountSelectionExplicit = userDefaults.object(forKey: Self.menuBarSelectedAccountIDsDefaultsKey) != nil
+        menuBarSelectedAccountIDs = Self.uniqueMenuBarAccountIDs(
+            userDefaults.stringArray(forKey: Self.menuBarSelectedAccountIDsDefaultsKey) ?? []
         )
         refreshIntervalSeconds = Self.normalizedRefreshInterval(
             userDefaults.object(forKey: Self.refreshIntervalDefaultsKey) as? Int
         )
-        refreshProviderAvailability()
 
         if startImmediately {
-            refreshNow()
-            startAutoRefresh()
+            start()
         }
+    }
+
+    func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
+        refreshProviderAvailability()
+        refreshNow()
+        startAutoRefresh()
     }
 
     var availableProviders: [AgentProviderKind] {
@@ -137,7 +178,6 @@ final class AppModel {
     var menuBarTitle: String {
         let segments = availableProviders.map { provider in
             menuBarSummarySegment(
-                shortTitle: provider.menuBarShortPrefix,
                 title: provider.menuBarTitlePrefix,
                 snapshot: snapshot(for: provider),
                 error: errorMessage(for: provider)
@@ -148,20 +188,51 @@ final class AppModel {
     }
 
     var menuBarAccessibilityTitle: String {
-        let segments = availableProviders.map { provider in
-            accessibilitySummarySegment(
-                title: provider.menuBarTitlePrefix,
-                snapshot: snapshot(for: provider),
-                error: errorMessage(for: provider)
-            )
+        let segments = menuBarAccountStatuses.map { status in
+            accessibilitySummarySegment(for: status)
         }
 
-        return segments.isEmpty ? "No supported agents detected on this Mac" : segments.joined(separator: ", ")
+        if !segments.isEmpty {
+            return segments.joined(separator: ", ")
+        }
+
+        if availableProviders.isEmpty {
+            return "No supported agents detected on this Mac"
+        }
+
+        return isMenuBarAccountSelectionExplicit ? "No menu bar accounts selected" : "No signed-in accounts available"
     }
 
-    var statusIconUsedPercents: [Double?] {
-        let values = availableProviders.map(usedPercent(for:))
-        return values.isEmpty ? [nil] : values
+    var statusIconQuotaBars: [MenuBarStatusImage.Bar] {
+        let statuses = Array(menuBarAccountStatuses.prefix(menuBarMaxDisplayedAccounts))
+
+        guard !statuses.isEmpty else {
+            return [MenuBarStatusImage.Bar(provider: nil, remainingPercent: nil)]
+        }
+
+        let providerCounts = Dictionary(grouping: statuses, by: \.provider).mapValues(\.count)
+        var providerIndexes: [AgentProviderKind: Int] = [:]
+
+        return statuses.map { status in
+            let provider = status.provider
+            let index = (providerIndexes[provider] ?? 0) + 1
+            providerIndexes[provider] = index
+
+            return MenuBarStatusImage.Bar(
+                provider: provider,
+                label: statusIconLabel(
+                    for: status,
+                    duplicateIndex: index,
+                    duplicateCount: providerCounts[provider] ?? 1
+                ),
+                remainingPercent: status.snapshot?.highlightMetric?.remainingPercent,
+                isError: status.errorMessage != nil
+            )
+        }
+    }
+
+    var hasExplicitMenuBarAccountSelection: Bool {
+        isMenuBarAccountSelectionExplicit
     }
 
     var codexUsedPercent: Double? {
@@ -180,15 +251,6 @@ final class AppModel {
         usedPercent(for: .claude)
     }
 
-    var menuBarIconEmphasis: MenuBarStatusImage.Emphasis {
-        guard let metric = highlightMetric else { return .idle }
-        switch metric.usedPercent {
-        case 90...: return .critical
-        case 75...: return .warning
-        default:    return .normal
-        }
-    }
-
     func configuredAccounts(for provider: AgentProviderKind) -> [ConfiguredAccountDirectory] {
         configuredDirectoriesByProvider[provider] ?? []
     }
@@ -202,6 +264,31 @@ final class AppModel {
 
     func visibleAccountStatuses(for provider: AgentProviderKind) -> [AgentAccountStatus] {
         accountStatuses(for: provider).filter(\.shouldDisplayInMenu)
+    }
+
+    func isAccountShownInMenuBar(_ account: ConfiguredAgentAccount) -> Bool {
+        effectiveMenuBarSelectedAccountIDs.contains(account.id)
+    }
+
+    func setAccount(_ account: ConfiguredAgentAccount, shownInMenuBar: Bool) {
+        var selectedIDs = effectiveMenuBarSelectedAccountIDs.filter { $0 != account.id }
+
+        if shownInMenuBar {
+            while selectedIDs.count >= menuBarMaxDisplayedAccounts {
+                selectedIDs.removeFirst()
+            }
+
+            selectedIDs.append(account.id)
+        }
+
+        isMenuBarAccountSelectionExplicit = true
+        menuBarSelectedAccountIDs = Self.uniqueMenuBarAccountIDs(selectedIDs)
+    }
+
+    func resetMenuBarAccountSelection() {
+        isMenuBarAccountSelectionExplicit = false
+        menuBarSelectedAccountIDs = []
+        userDefaults.removeObject(forKey: Self.menuBarSelectedAccountIDsDefaultsKey)
     }
 
     func selectAccountDirectory(for provider: AgentProviderKind) -> URL? {
@@ -242,6 +329,16 @@ final class AppModel {
         }
 
         let directory = ConfiguredAccountDirectory(path: trimmedPath)
+        if provider == .claude {
+            guard Self.hasClaudeAuthFile(in: directory) else {
+                return .credentialsFileMissing(
+                    ClaudeCLIInstallation(configDirectory: directory.url).authFile.path
+                )
+            }
+        } else if !isAppManagedAccountDirectory(directory, for: provider) {
+            return .browserLoginRequired
+        }
+
         guard !configuredAccounts(for: provider).contains(directory) else {
             return .duplicate
         }
@@ -261,6 +358,18 @@ final class AppModel {
     }
 
     func removeConfiguredAccount(_ account: ConfiguredAgentAccount) {
+        if account.provider == .codex,
+           let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url) {
+            _ = try? CodexAppAuthStore.deleteSession(accountID: accountID)
+            try? CodexAppAuthStore.deleteAccountDirectory(accountID: accountID)
+        } else if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: account.provider
+        ) {
+            _ = try? AgentProviderAppAuthStore.deleteSession(provider: account.provider, accountID: accountID)
+            try? AgentProviderAppAuthStore.deleteAccountDirectory(provider: account.provider, accountID: accountID)
+        }
+
         let updated = configuredAccounts(for: account.provider).filter { $0 != account.directory }
         clearStoredAccountState(for: [account.id])
         updateConfiguredAccounts(updated, for: account.provider)
@@ -303,6 +412,151 @@ final class AppModel {
         }
     }
 
+    func signInToCodexWithBrowser(forceAccountSelection: Bool = false) {
+        signInWithBrowser(for: .codex, forceAccountSelection: forceAccountSelection)
+    }
+
+    func isLoginInProgress(for provider: AgentProviderKind) -> Bool {
+        provider == .codex ? isCodexLoginInProgress : providerLoginInProgress.contains(provider)
+    }
+
+    func loginError(for provider: AgentProviderKind) -> String? {
+        provider == .codex ? codexLoginError : providerLoginErrors[provider]
+    }
+
+    func loginMessage(for provider: AgentProviderKind) -> String? {
+        providerLoginMessages[provider]
+    }
+
+    func supportsBrowserSignIn(for provider: AgentProviderKind) -> Bool {
+        switch provider {
+        case .codex, .githubCopilot, .gemini:
+            return true
+        case .claude:
+            return false
+        }
+    }
+
+    func signInWithBrowser(for provider: AgentProviderKind, forceAccountSelection: Bool = false) {
+        guard supportsBrowserSignIn(for: provider) else {
+            providerLoginErrors[provider] = "Claude accounts are read from Claude Code auth.json. Add a directory containing auth.json instead of browser sign-in."
+            return
+        }
+
+        if provider == .codex {
+            signInToCodexWithBrowserImpl(forceAccountSelection: forceAccountSelection)
+            return
+        }
+
+        guard !providerLoginInProgress.contains(provider) else {
+            return
+        }
+
+        providerLoginInProgress.insert(provider)
+        providerLoginErrors[provider] = nil
+        providerLoginMessages[provider] = nil
+
+        Task {
+            defer {
+                providerLoginInProgress.remove(provider)
+            }
+
+            do {
+                let session: AgentProviderStoredAuthSession
+                switch provider {
+                case .githubCopilot:
+                    session = try await GitHubCopilotBrowserLoginService().signIn { message in
+                        self.providerLoginMessages[provider] = message
+                    }
+                case .gemini:
+                    session = try await GeminiBrowserLoginService().signIn(forceAccountSelection: forceAccountSelection)
+                case .codex, .claude:
+                    return
+                }
+
+                try AgentProviderAppAuthStore.save(session: session)
+                try AgentProviderAppAuthStore.ensureAccountDirectoryExists(
+                    for: provider,
+                    accountID: session.accountID
+                )
+                let directoryURL = AgentProviderAppAuthStore.accountDirectory(
+                    for: provider,
+                    accountID: session.accountID
+                )
+                let addResult = addConfiguredAccountDirectory(path: directoryURL.path, for: provider)
+
+                switch addResult {
+                case .added:
+                    providerLoginErrors[provider] = nil
+                    providerLoginMessages[provider] = nil
+                    break
+                case .duplicate:
+                    providerLoginErrors[provider] = "That \(provider.title) account is already signed in. Choose a different account in the browser and try again."
+                    refreshProviderAvailability()
+                    refreshNow()
+                case .emptyPath, .browserLoginRequired:
+                    providerLoginErrors[provider] = "\(provider.title) sign-in completed, but AgentBar could not save the account reference."
+                case .credentialsFileMissing:
+                    providerLoginErrors[provider] = "\(provider.title) sign-in completed, but AgentBar could not find the saved credentials."
+                }
+            } catch {
+                providerLoginErrors[provider] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    private func signInToCodexWithBrowserImpl(forceAccountSelection: Bool = false) {
+        guard !isCodexLoginInProgress else {
+            return
+        }
+
+        isCodexLoginInProgress = true
+        codexLoginError = nil
+
+        Task {
+            defer {
+                isCodexLoginInProgress = false
+            }
+
+            do {
+                let loginMode: CodexBrowserLoginMode = forceAccountSelection ? .forceAccountSelection : .browserSession
+                let browserSession = try await CodexBrowserLoginService().signIn(mode: loginMode)
+                let localAccountID = CodexAppAuthStore.localAccountID(
+                    for: browserSession,
+                    existingLocalAccountIDs: configuredCodexLocalAccountIDs()
+                )
+                let session = CodexStoredAuthSession(
+                    idToken: browserSession.idToken,
+                    accessToken: browserSession.accessToken,
+                    refreshToken: browserSession.refreshToken,
+                    accountID: browserSession.accountID,
+                    localAccountID: localAccountID,
+                    lastRefresh: browserSession.lastRefresh
+                )
+                try CodexAppAuthStore.save(session: session)
+                try CodexAppAuthStore.ensureAccountDirectoryExists(for: localAccountID)
+                let directoryURL = CodexAppAuthStore.accountDirectory(for: localAccountID)
+                let addResult = addConfiguredAccountDirectory(path: directoryURL.path, for: .codex)
+
+                switch addResult {
+                case .added:
+                    codexLoginError = nil
+                    break
+                case .duplicate:
+                    codexLoginError = "That Codex account is already signed in. Choose a different account in the browser, or sign out of ChatGPT there and try again."
+                    refreshProviderAvailability()
+                    refreshNow()
+                case .emptyPath, .browserLoginRequired:
+                    codexLoginError = "Codex sign-in completed, but AgentBar could not save the account reference."
+                case .credentialsFileMissing:
+                    codexLoginError = "Codex sign-in completed, but AgentBar could not find the saved credentials."
+                }
+            } catch {
+                codexLoginError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
     func snapshot(for provider: AgentProviderKind) -> AgentQuotaSnapshot? {
         summarySnapshot(for: provider)
     }
@@ -334,10 +588,41 @@ final class AppModel {
     private func accountStatus(for account: ConfiguredAgentAccount) -> AgentAccountStatus {
         AgentAccountStatus(
             account: account,
+            accountLabel: storedAccountLabel(for: account),
             snapshot: accountSnapshotsByID[account.id],
             errorMessage: accountErrorsByID[account.id],
             credentialsDetected: isConfiguredAccountAvailable(account)
         )
+    }
+
+    private func storedAccountLabel(for account: ConfiguredAgentAccount) -> String? {
+        if account.provider == .codex,
+           let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url),
+           let session = try? CodexAppAuthStore.loadSession(accountID: accountID) {
+            return CodexQuotaService().preferredAccountLabel(
+                idToken: session.idToken,
+                fallbackAccountID: session.accountID
+            )
+        }
+
+        guard let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: account.provider
+        ),
+              let session = try? AgentProviderAppAuthStore.loadSession(
+                provider: account.provider,
+                accountID: accountID
+              ) else {
+            return nil
+        }
+
+        return session.accountLabel
+    }
+
+    private func configuredCodexLocalAccountIDs() -> [String] {
+        configuredAccounts(for: .codex).compactMap { directory in
+            CodexAppAuthStore.accountID(fromAccountDirectory: directory.url)
+        }
     }
 
     private func setPrimaryAccountState(
@@ -421,6 +706,31 @@ final class AppModel {
         }
     }
 
+    private var menuBarCandidateAccountStatuses: [AgentAccountStatus] {
+        availableProviders.flatMap(accountStatuses(for:))
+    }
+
+    private var defaultMenuBarSelectedAccountIDs: [String] {
+        Array(menuBarCandidateAccountStatuses.prefix(menuBarMaxDisplayedAccounts).map(\.id))
+    }
+
+    private var effectiveMenuBarSelectedAccountIDs: [String] {
+        isMenuBarAccountSelectionExplicit
+            ? menuBarSelectedAccountIDs
+            : defaultMenuBarSelectedAccountIDs
+    }
+
+    private var menuBarAccountStatuses: [AgentAccountStatus] {
+        let candidates = menuBarCandidateAccountStatuses
+        let statusesByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+
+        if isMenuBarAccountSelectionExplicit {
+            return menuBarSelectedAccountIDs.compactMap { statusesByID[$0] }
+        }
+
+        return Array(candidates.prefix(menuBarMaxDisplayedAccounts))
+    }
+
     private func availableConfiguredAccounts() -> [ConfiguredAgentAccount] {
         allConfiguredAccounts().filter(isConfiguredAccountAvailable)
     }
@@ -457,6 +767,7 @@ final class AppModel {
     ) {
         configuredDirectoriesByProvider[provider] = directories
         persistConfiguredAccounts(for: provider)
+        pruneMenuBarSelectedAccountIDs()
         refreshProviderAvailability()
 
         guard autoRefreshEnabled else { return }
@@ -466,6 +777,31 @@ final class AppModel {
         } else {
             refreshNow()
         }
+    }
+
+    private func trimMenuBarSelectedAccountIDsToDisplayLimit() {
+        guard isMenuBarAccountSelectionExplicit,
+              menuBarSelectedAccountIDs.count > menuBarMaxDisplayedAccounts else {
+            return
+        }
+
+        menuBarSelectedAccountIDs = Array(menuBarSelectedAccountIDs.prefix(menuBarMaxDisplayedAccounts))
+    }
+
+    private func pruneMenuBarSelectedAccountIDs() {
+        guard isMenuBarAccountSelectionExplicit else { return }
+
+        let configuredIDs = Set(allConfiguredAccounts().map(\.id))
+        menuBarSelectedAccountIDs = menuBarSelectedAccountIDs.filter(configuredIDs.contains)
+    }
+
+    private func persistMenuBarAccountSelection() {
+        guard isMenuBarAccountSelectionExplicit else { return }
+
+        userDefaults.set(
+            Self.uniqueMenuBarAccountIDs(menuBarSelectedAccountIDs),
+            forKey: Self.menuBarSelectedAccountIDsDefaultsKey
+        )
     }
 
     private func persistConfiguredAccounts(for provider: AgentProviderKind) {
@@ -482,6 +818,7 @@ final class AppModel {
             switch result.result {
             case .success(let snapshot):
                 setAccountState(snapshot: snapshot, error: nil, for: result.account)
+                persistStoredAccountLabelIfNeeded(for: result.account, accountLabel: snapshot.accountLabel)
                 if let metric = snapshot.highlightMetric {
                     logInfo("\(result.account.provider.title) account \(snapshot.accountLabel) loaded — \(metric.percentText) remaining")
                 } else {
@@ -495,6 +832,42 @@ final class AppModel {
         }
 
         refreshProviderAvailability()
+    }
+
+    private func persistStoredAccountLabelIfNeeded(
+        for account: ConfiguredAgentAccount,
+        accountLabel: String
+    ) {
+        guard account.provider != .codex,
+              account.provider != .claude,
+              let accountID = AgentProviderAppAuthStore.accountID(
+                fromAccountDirectory: account.directory.url,
+                provider: account.provider
+              ),
+              let session = try? AgentProviderAppAuthStore.loadSession(
+                provider: account.provider,
+                accountID: accountID
+              ),
+              session.accountLabel != accountLabel else {
+            return
+        }
+
+        let updatedSession = AgentProviderStoredAuthSession(
+            provider: session.provider,
+            accountID: session.accountID,
+            accountLabel: accountLabel,
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken,
+            expiryDate: session.expiryDate,
+            scopes: session.scopes,
+            lastRefresh: session.lastRefresh
+        )
+
+        do {
+            try AgentProviderAppAuthStore.save(session: updatedSession)
+        } catch {
+            logError("[AppModel] Could not persist \(account.provider.title) account label: \(error)")
+        }
     }
 
     private static func loadAccounts(
@@ -531,22 +904,11 @@ final class AppModel {
     }
 
     private func menuBarSummarySegment(
-        shortTitle: String,
         title: String,
         snapshot: AgentQuotaSnapshot?,
         error: String?
     ) -> String {
-        switch menuBarDisplayMode {
-        case .shorter:
-            let value = menuBarValueText(snapshot: snapshot, error: error, style: .percent)
-            let separator = value.first?.isNumber == true ? "" : " "
-            return "\(shortTitle)\(separator)\(value)"
-        case .clearer:
-            return "\(title) \(menuBarValueText(snapshot: snapshot, error: error, style: .percent))"
-        case .mixedMetrics:
-            let style: MenuBarValueStyle = title == "Copilot" ? .remainingLabel : .percent
-            return "\(title) \(menuBarValueText(snapshot: snapshot, error: error, style: style))"
-        }
+        "\(title) \(menuBarValueText(snapshot: snapshot, error: error))"
     }
 
     private func accessibilitySummarySegment(
@@ -569,18 +931,63 @@ final class AppModel {
         return "\(title) loading"
     }
 
+    private func accessibilitySummarySegment(for status: AgentAccountStatus) -> String {
+        let title = status.displayLabel ?? status.provider.menuBarTitlePrefix
+
+        if let snapshot = status.snapshot, let metric = snapshot.highlightMetric {
+            return "\(title) \(status.provider.menuBarTitlePrefix) \(metric.percentText) remaining"
+        }
+
+        if status.snapshot != nil {
+            return "\(title) \(status.provider.menuBarTitlePrefix) ready"
+        }
+
+        if status.errorMessage != nil {
+            return "\(title) \(status.provider.menuBarTitlePrefix) unavailable"
+        }
+
+        return "\(title) \(status.provider.menuBarTitlePrefix) loading"
+    }
+
+    private func statusIconLabel(
+        for status: AgentAccountStatus,
+        duplicateIndex: Int,
+        duplicateCount: Int
+    ) -> String {
+        duplicateAwareProviderLabel(
+            shortProviderLabel(for: status.provider),
+            duplicateIndex: duplicateIndex,
+            duplicateCount: duplicateCount
+        )
+    }
+
+    private func duplicateAwareProviderLabel(
+        _ label: String,
+        duplicateIndex: Int,
+        duplicateCount: Int
+    ) -> String {
+        duplicateCount > 1 ? "\(label)\(duplicateIndex)" : label
+    }
+
+    private func shortProviderLabel(for provider: AgentProviderKind) -> String {
+        switch provider {
+        case .codex:
+            return "cx"
+        case .githubCopilot:
+            return "cp"
+        case .gemini:
+            return "gm"
+        case .claude:
+            return "cl"
+        }
+    }
+
     private func menuBarValueText(
         snapshot: AgentQuotaSnapshot?,
-        error: String?,
-        style: MenuBarValueStyle
+        error: String?
     ) -> String {
         if let snapshot, let metric = snapshot.highlightMetric {
-            switch style {
-            case .percent:
-                return metric.percentText
-            case .remainingLabel:
-                return metric.remainingLabel
-            }
+            return metric.percentText
         }
 
         if snapshot != nil {
@@ -605,16 +1012,77 @@ final class AppModel {
         })
     }
 
+    private static func migrateLegacyUserDefaults(to userDefaults: UserDefaults) {
+        guard userDefaults.object(forKey: legacyUserDefaultsMigrationKey) == nil else {
+            return
+        }
+
+        defer {
+            userDefaults.set(true, forKey: legacyUserDefaultsMigrationKey)
+        }
+
+        guard let legacyDefaults = UserDefaults(suiteName: legacyAppBundleIdentifier) else {
+            return
+        }
+
+        let keysToMigrate = [
+            menuBarMaxDisplayedAccountsDefaultsKey,
+            menuBarSelectedAccountIDsDefaultsKey,
+            refreshIntervalDefaultsKey,
+        ] + AgentProviderKind.allCases.map { configuredAccountDirectoriesDefaultsKey(for: $0) }
+
+        for key in keysToMigrate where userDefaults.object(forKey: key) == nil {
+            guard let legacyValue = legacyDefaults.object(forKey: key) else { continue }
+            userDefaults.set(legacyValue, forKey: key)
+        }
+    }
+
     private static func loadConfiguredAccounts(
         for provider: AgentProviderKind,
         from userDefaults: UserDefaults
     ) -> [ConfiguredAccountDirectory] {
         let key = configuredAccountDirectoriesDefaultsKey(for: provider)
-        guard userDefaults.object(forKey: key) != nil else {
-            return [provider.defaultAccountDirectory]
+        if provider == .claude {
+            let paths = userDefaults.stringArray(forKey: key) ?? [provider.defaultAccountDirectory.path]
+            return ConfiguredAccountDirectory
+                .unique(paths: paths)
+                .filter(hasClaudeAuthFile)
+        }
+
+        if provider == .codex {
+            return ConfiguredAccountDirectory
+                .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
+                .filter(CodexAppAuthStore.isAppManagedAccountDirectory)
+        }
+
+        if provider == .githubCopilot || provider == .gemini {
+            return ConfiguredAccountDirectory
+                .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
+                .filter { AgentProviderAppAuthStore.isAppManagedAccountDirectory($0, provider: provider) }
         }
 
         return ConfiguredAccountDirectory.unique(paths: userDefaults.stringArray(forKey: key) ?? [])
+    }
+
+    private func isAppManagedAccountDirectory(
+        _ directory: ConfiguredAccountDirectory,
+        for provider: AgentProviderKind
+    ) -> Bool {
+        if provider == .codex {
+            return CodexAppAuthStore.isAppManagedAccountDirectory(directory)
+        }
+
+        if provider == .claude {
+            return Self.hasClaudeAuthFile(in: directory)
+        }
+
+        return AgentProviderAppAuthStore.isAppManagedAccountDirectory(directory, provider: provider)
+    }
+
+    private static func hasClaudeAuthFile(in directory: ConfiguredAccountDirectory) -> Bool {
+        ClaudeQuotaService(
+            installation: ClaudeCLIInstallation(configDirectory: directory.url)
+        ).isAvailable
     }
 
     private static func configuredAccountDirectoriesDefaultsKey(
@@ -628,9 +1096,17 @@ final class AppModel {
         return min(max(rawValue, minimumRefreshIntervalSeconds), maximumRefreshIntervalSeconds)
     }
 
-    private enum MenuBarValueStyle {
-        case percent
-        case remainingLabel
+    private static func normalizedMenuBarMaxDisplayedAccounts(_ value: Int?) -> Int {
+        let rawValue = value ?? defaultMenuBarMaxDisplayedAccounts
+        return min(max(rawValue, minimumMenuBarMaxDisplayedAccounts), maximumMenuBarMaxDisplayedAccounts)
+    }
+
+    private static func uniqueMenuBarAccountIDs(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+
+        return ids.filter { id in
+            seen.insert(id).inserted
+        }
     }
 
     private func persistWidgetState() {
@@ -669,6 +1145,8 @@ final class AppModel {
         case added
         case emptyPath
         case duplicate
+        case browserLoginRequired
+        case credentialsFileMissing(String)
     }
 
     private struct AccountRefreshResult {

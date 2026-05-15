@@ -4,8 +4,11 @@ import os
 public struct ClaudeCLIInstallation: Sendable {
     public let configDirectory: URL
 
+    public static let defaultConfigDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: ".config/claude-code", directoryHint: .isDirectory)
+
     public static let `default` = ClaudeCLIInstallation(
-        configDirectory: URL(fileURLWithPath: NSString(string: "~/.config/claude-code").expandingTildeInPath)
+        configDirectory: defaultConfigDirectory
     )
 
     public init(configDirectory: URL) {
@@ -258,7 +261,7 @@ enum ClaudeQuotaError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case let .missingCredentialsFile(path):
-            return "Claude Code credentials not found at \(path). Run `claude` and sign in first."
+            return "Claude Code credentials not found at \(path). Sign in with Claude Code first, then refresh AgentBar."
         case .invalidCredentialsFile:
             return "Claude Code auth.json could not be parsed."
         }

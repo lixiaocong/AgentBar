@@ -4,7 +4,7 @@ Minimal macOS menu bar app for tracking local coding-agent usage and account sta
 
 > This app was generated entirely by coding agents.
 
-AgentBar detects supported providers automatically from local CLI or IDE login files and displays them side by side in the menu bar popover. Providers without local credentials stay hidden.
+AgentBar signs in to supported providers through the browser, stores tokens in its own macOS Keychain entries, and displays signed-in accounts side by side in the menu bar popover. It does not depend on local CLI or IDE login files.
 
 ## Desktop Widget
 
@@ -47,7 +47,7 @@ swift test --scratch-path .build
 
 ### Codex
 
-AgentBar reads `~/.codex/auth.json`, then calls:
+AgentBar signs in with the browser, stores Codex credentials in the macOS Keychain, then calls:
 
 - `GET https://chatgpt.com/backend-api/wham/usage`
 
@@ -60,7 +60,7 @@ It displays:
 
 ### GitHub Copilot
 
-AgentBar reads `~/.config/github-copilot/apps.json`, then calls:
+AgentBar signs in with the browser through GitHub's device authorization flow, stores GitHub Copilot credentials in the macOS Keychain, then calls:
 
 - `GET https://api.github.com/copilot_internal/user`
 
@@ -72,7 +72,7 @@ It displays:
 
 ### Gemini Code Assist
 
-AgentBar reads `~/.gemini/oauth_creds.json`, refreshes the OAuth token from the local Gemini CLI metadata when needed, then calls:
+AgentBar signs in with the browser through Google's OAuth flow, stores Gemini credentials in the macOS Keychain, refreshes the OAuth token when needed, then calls:
 
 - `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
 - `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`
@@ -85,11 +85,6 @@ It displays:
 
 ### Claude Code
 
-AgentBar reads `~/.config/claude-code/auth.json`.
+AgentBar reads Claude Code auth from `~/.config/claude-code/auth.json` by default. You can also add another directory that contains `auth.json` from Settings.
 
-It currently displays:
-
-- detected Claude account label when available
-- detected auth mode or plan label when available
-
-Claude support is local-auth detection only for now. AgentBar does not currently show Claude quota windows because the app does not have a confirmed quota endpoint wired for Claude yet.
+AgentBar does not currently show Claude quota windows because the app does not have a confirmed quota endpoint wired for Claude yet. The Claude card shows the detected local account and auth type.

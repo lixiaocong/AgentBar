@@ -5,7 +5,7 @@ import Testing
 
 @Test
 @MainActor
-func appModelDefaultsToClearerMenuBarFormatAndTenSecondRefresh() {
+func appModelDefaultsToTwoMenuBarAccountsAndTenSecondRefresh() {
     let defaults = testDefaults(named: #function)
     let model = AppModel(
         userDefaults: defaults,
@@ -13,43 +13,87 @@ func appModelDefaultsToClearerMenuBarFormatAndTenSecondRefresh() {
         startImmediately: false
     )
 
+    model.addConfiguredAccountDirectory(
+        CodexAppAuthStore.accountDirectory(for: "account-format"),
+        for: .codex
+    )
+    addAppManagedAccount(to: model, provider: .githubCopilot, accountID: "copilot-format")
+    addAppManagedAccount(to: model, provider: .gemini, accountID: "gemini-format")
+    addAppManagedAccount(to: model, provider: .claude, accountID: "claude-format")
     model.codexSnapshot = makeSnapshot(provider: .codex, usedPercent: 66, remainingLabel: "34% left")
     model.copilotSnapshot = makeSnapshot(provider: .githubCopilot, usedPercent: 23, remainingLabel: "231 left")
     model.geminiSnapshot = makeSnapshot(provider: .gemini, usedPercent: 0, remainingLabel: "100% left")
     model.claudeSnapshot = makeSnapshot(provider: .claude, usedPercent: 12, remainingLabel: "88% left")
 
-    #expect(model.menuBarDisplayMode == .clearer)
+    #expect(model.menuBarMaxDisplayedAccounts == 2)
     #expect(model.refreshIntervalSeconds == 10)
     #expect(model.menuBarTitle == "Codex 34%  Copilot 77%  Gemini 100%  Claude 88%")
+    #expect(
+        model.statusIconQuotaBars == [
+            MenuBarStatusImage.Bar(provider: .codex, label: "cx", remainingPercent: 34),
+            MenuBarStatusImage.Bar(provider: .githubCopilot, label: "cp", remainingPercent: 77),
+        ]
+    )
+
+    model.menuBarMaxDisplayedAccounts = 3
+    #expect(
+        model.statusIconQuotaBars == [
+            MenuBarStatusImage.Bar(provider: .codex, label: "cx", remainingPercent: 34),
+            MenuBarStatusImage.Bar(provider: .githubCopilot, label: "cp", remainingPercent: 77),
+            MenuBarStatusImage.Bar(provider: .gemini, label: "gm", remainingPercent: 100),
+        ]
+    )
 }
 
 @Test
 @MainActor
-func appModelSupportsShorterAndMixedMetricFormats() {
+func appModelChoosesAccountsForMenuBarInsteadOfProviders() {
     let defaults = testDefaults(named: #function)
     let model = AppModel(
         userDefaults: defaults,
-        providerAvailabilityResolver: { .all },
+        providerAvailabilityResolver: {
+            AgentProviderAvailability(codex: true, githubCopilot: false, gemini: false, claude: false)
+        },
         startImmediately: false
     )
 
+    let firstDirectory = CodexAppAuthStore.accountDirectory(for: "codex-account-one")
+    let secondDirectory = CodexAppAuthStore.accountDirectory(for: "codex-account-two")
+    model.addConfiguredAccountDirectory(firstDirectory, for: .codex)
+    model.addConfiguredAccountDirectory(secondDirectory, for: .codex)
     model.codexSnapshot = makeSnapshot(provider: .codex, usedPercent: 66, remainingLabel: "34% left")
-    model.copilotSnapshot = makeSnapshot(provider: .githubCopilot, usedPercent: 23, remainingLabel: "231 left")
-    model.geminiSnapshot = makeSnapshot(provider: .gemini, usedPercent: 0, remainingLabel: "100% left")
-    model.claudeSnapshot = makeSnapshot(provider: .claude, usedPercent: 12, remainingLabel: "88% left")
 
-    model.menuBarDisplayMode = .shorter
-    #expect(model.menuBarTitle == "C34%  P77%  G100%  Cl88%")
+    #expect(
+        model.statusIconQuotaBars == [
+            MenuBarStatusImage.Bar(provider: .codex, label: "cx1", remainingPercent: 34),
+            MenuBarStatusImage.Bar(provider: .codex, label: "cx2", remainingPercent: nil),
+        ]
+    )
 
-    model.menuBarDisplayMode = .mixedMetrics
-    #expect(model.menuBarTitle == "Codex 34%  Copilot 231 left  Gemini 100%  Claude 88%")
+    let firstAccount = ConfiguredAgentAccount(
+        provider: .codex,
+        directory: ConfiguredAccountDirectory(path: firstDirectory.path)
+    )
+    let secondAccount = ConfiguredAgentAccount(
+        provider: .codex,
+        directory: ConfiguredAccountDirectory(path: secondDirectory.path)
+    )
+
+    model.setAccount(firstAccount, shownInMenuBar: false)
+    #expect(!model.isAccountShownInMenuBar(firstAccount))
+    #expect(model.isAccountShownInMenuBar(secondAccount))
+    #expect(
+        model.statusIconQuotaBars == [
+            MenuBarStatusImage.Bar(provider: .codex, label: "cx", remainingPercent: nil),
+        ]
+    )
 }
 
 @Test
 @MainActor
 func appModelLoadsStoredPreferences() {
     let defaults = testDefaults(named: #function)
-    defaults.set(MenuBarDisplayMode.shorter.rawValue, forKey: "menuBarDisplayMode")
+    defaults.set(3, forKey: "menuBarMaxDisplayedAgents")
     defaults.set(45, forKey: "refreshIntervalSeconds")
 
     let model = AppModel(
@@ -58,7 +102,7 @@ func appModelLoadsStoredPreferences() {
         startImmediately: false
     )
 
-    #expect(model.menuBarDisplayMode == .shorter)
+    #expect(model.menuBarMaxDisplayedAccounts == 3)
     #expect(model.refreshIntervalSeconds == 45)
 }
 
@@ -74,6 +118,11 @@ func appModelHidesUnavailableProvidersFromMenuBarSummary() {
         startImmediately: false
     )
 
+    model.addConfiguredAccountDirectory(
+        CodexAppAuthStore.accountDirectory(for: "account-visible"),
+        for: .codex
+    )
+    addAppManagedAccount(to: model, provider: .gemini, accountID: "gemini-visible")
     model.codexSnapshot = makeSnapshot(provider: .codex, usedPercent: 66, remainingLabel: "34% left")
     model.copilotSnapshot = makeSnapshot(provider: .githubCopilot, usedPercent: 23, remainingLabel: "231 left")
     model.geminiSnapshot = makeSnapshot(provider: .gemini, usedPercent: 0, remainingLabel: "100% left")
@@ -94,6 +143,7 @@ func appModelShowsReadyForProvidersWithoutQuotaMetrics() {
         startImmediately: false
     )
 
+    addAppManagedAccount(to: model, provider: .claude, accountID: "claude-ready")
     model.claudeSnapshot = AgentQuotaSnapshot(
         provider: .claude,
         accountLabel: "dev@example.com",
@@ -105,22 +155,44 @@ func appModelShowsReadyForProvidersWithoutQuotaMetrics() {
     )
 
     #expect(model.menuBarTitle == "Claude Ready")
-    #expect(model.menuBarAccessibilityTitle == "Claude ready")
+    #expect(model.menuBarAccessibilityTitle == "dev@example.com Claude ready")
 }
 
 @Test
 @MainActor
 func appModelDefaultsConfiguredDirectoriesToStandardLocations() {
     let defaults = testDefaults(named: #function)
+    defaults.set([], forKey: "configuredAccountDirectories.claude")
     let model = AppModel(
         userDefaults: defaults,
         startImmediately: false
     )
 
-    #expect(model.configuredAccounts(for: .codex) == [AgentProviderKind.codex.defaultAccountDirectory])
-    #expect(model.configuredAccounts(for: .githubCopilot) == [AgentProviderKind.githubCopilot.defaultAccountDirectory])
-    #expect(model.configuredAccounts(for: .gemini) == [AgentProviderKind.gemini.defaultAccountDirectory])
-    #expect(model.configuredAccounts(for: .claude) == [AgentProviderKind.claude.defaultAccountDirectory])
+    #expect(model.configuredAccounts(for: .codex) == [])
+    #expect(model.configuredAccounts(for: .githubCopilot) == [])
+    #expect(model.configuredAccounts(for: .gemini) == [])
+    #expect(model.configuredAccounts(for: .claude) == [])
+}
+
+@Test
+@MainActor
+func appModelAcceptsClaudeAuthJSONDirectories() throws {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(
+        userDefaults: defaults,
+        providerAvailabilityResolver: { .all },
+        startImmediately: false
+    )
+    let directory = try temporaryClaudeAuthDirectory(named: #function)
+
+    let result = model.addConfiguredAccountDirectory(
+        path: directory.path,
+        for: .claude
+    )
+
+    #expect(result == .added)
+    #expect(model.configuredAccounts(for: .claude) == [ConfiguredAccountDirectory(path: directory.path)])
+    #expect(model.accountStatuses(for: .claude).first?.credentialsDetected == true)
 }
 
 @Test
@@ -132,20 +204,21 @@ func appModelPersistsAddedAndRemovedConfiguredDirectories() {
         startImmediately: false
     )
 
-    let customCodexDirectory = URL(fileURLWithPath: "/tmp/agent-bar-tests/codex-work")
-    let defaultCodexDirectory = model.configuredAccounts(for: .codex).first!
+    let firstCodexDirectory = CodexAppAuthStore.accountDirectory(for: "account-one")
+    let secondCodexDirectory = CodexAppAuthStore.accountDirectory(for: "account-two")
 
-    model.addConfiguredAccountDirectory(customCodexDirectory, for: .codex)
+    model.addConfiguredAccountDirectory(firstCodexDirectory, for: .codex)
+    model.addConfiguredAccountDirectory(secondCodexDirectory, for: .codex)
     #expect(
         model.configuredAccounts(for: .codex)
             == [
-                AgentProviderKind.codex.defaultAccountDirectory,
-                ConfiguredAccountDirectory(path: customCodexDirectory.path),
+                ConfiguredAccountDirectory(path: firstCodexDirectory.path),
+                ConfiguredAccountDirectory(path: secondCodexDirectory.path),
             ]
     )
 
     model.removeConfiguredAccount(
-        ConfiguredAgentAccount(provider: .codex, directory: defaultCodexDirectory)
+        ConfiguredAgentAccount(provider: .codex, directory: ConfiguredAccountDirectory(path: firstCodexDirectory.path))
     )
 
     let reloaded = AppModel(
@@ -155,28 +228,58 @@ func appModelPersistsAddedAndRemovedConfiguredDirectories() {
 
     #expect(
         reloaded.configuredAccounts(for: .codex)
-            == [ConfiguredAccountDirectory(path: customCodexDirectory.path)]
+            == [ConfiguredAccountDirectory(path: secondCodexDirectory.path)]
     )
 }
 
 @Test
 @MainActor
-func appModelAddsConfiguredDirectoriesFromTypedPaths() {
+func appModelAddsAppManagedCodexDirectoriesFromTypedPaths() {
     let defaults = testDefaults(named: #function)
     let model = AppModel(
         userDefaults: defaults,
         startImmediately: false
     )
+    let directory = CodexAppAuthStore.accountDirectory(for: "account-typed")
 
     let result = model.addConfiguredAccountDirectory(
-        path: "/tmp/agent-bar-tests/.codex-work/",
+        path: directory.path,
         for: .codex
     )
 
     #expect(result == .added)
     #expect(
         model.configuredAccounts(for: .codex).last
-            == ConfiguredAccountDirectory(path: "/tmp/agent-bar-tests/.codex-work")
+            == ConfiguredAccountDirectory(path: directory.path)
+    )
+}
+
+@Test
+@MainActor
+func appModelRejectsLocalAgentDirectories() {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(
+        userDefaults: defaults,
+        startImmediately: false
+    )
+
+    #expect(
+        model.addConfiguredAccountDirectory(
+            path: "/tmp/agent-bar-tests/.codex-work/",
+            for: .codex
+        ) == .browserLoginRequired
+    )
+    #expect(
+        model.addConfiguredAccountDirectory(
+            path: "/tmp/agent-bar-tests/.config/github-copilot/",
+            for: .githubCopilot
+        ) == .browserLoginRequired
+    )
+    #expect(
+        model.addConfiguredAccountDirectory(
+            path: "/tmp/agent-bar-tests/.gemini/",
+            for: .gemini
+        ) == .browserLoginRequired
     )
 }
 
@@ -190,9 +293,16 @@ func appModelRejectsEmptyAndDuplicateTypedPaths() {
     )
 
     #expect(model.addConfiguredAccountDirectory(path: "   ", for: .codex) == .emptyPath)
+    let directory = CodexAppAuthStore.accountDirectory(for: "account-duplicate")
     #expect(
         model.addConfiguredAccountDirectory(
-            path: AgentProviderKind.codex.defaultAccountDirectoryDisplayPath,
+            path: directory.path,
+            for: .codex
+        ) == .added
+    )
+    #expect(
+        model.addConfiguredAccountDirectory(
+            path: directory.path,
             for: .codex
         ) == .duplicate
     )
@@ -221,6 +331,33 @@ private func makeSnapshot(
         ],
         updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
     )
+}
+
+@MainActor
+private func addAppManagedAccount(
+    to model: AppModel,
+    provider: AgentProviderKind,
+    accountID: String
+) {
+    if provider == .claude {
+        let directory = try! temporaryClaudeAuthDirectory(named: accountID)
+        model.addConfiguredAccountDirectory(directory, for: provider)
+        return
+    }
+
+    model.addConfiguredAccountDirectory(
+        AgentProviderAppAuthStore.accountDirectory(for: provider, accountID: accountID),
+        for: provider
+    )
+}
+
+private func temporaryClaudeAuthDirectory(named name: String) throws -> URL {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appending(path: "AgentBarTests-\(name)-\(UUID().uuidString)", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let auth = #"{"user":{"email":"claude@example.com"},"accessToken":"token","refreshToken":"refresh"}"#
+    try auth.data(using: .utf8)!.write(to: directory.appending(path: "auth.json"))
+    return directory
 }
 
 private func testDefaults(named name: String) -> UserDefaults {

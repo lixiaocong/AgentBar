@@ -6,6 +6,7 @@ import os
 public struct GeminiCLIInstallation: Sendable {
     public let configDirectory: URL
     public let executableLocations: [URL]
+    public let appManagedAccountID: String?
 
     public static let defaultExecutableLocations = [
         URL(fileURLWithPath: "/opt/homebrew/bin/gemini"),
@@ -13,13 +14,23 @@ public struct GeminiCLIInstallation: Sendable {
     ]
 
     public static let `default` = GeminiCLIInstallation(
-        configDirectory: URL(fileURLWithPath: NSString(string: "~/.gemini").expandingTildeInPath),
-        executableLocations: Self.defaultExecutableLocations
+        configDirectory: AgentProviderAppAuthStore.accountsDirectory(for: .gemini),
+        executableLocations: Self.defaultExecutableLocations,
+        appManagedAccountID: nil
     )
 
-    public init(configDirectory: URL, executableLocations: [URL]) {
+    public init(configDirectory: URL, executableLocations: [URL], appManagedAccountID: String? = nil) {
         self.configDirectory = configDirectory
         self.executableLocations = executableLocations
+        self.appManagedAccountID = appManagedAccountID
+    }
+
+    public static func appManaged(accountID: String) -> GeminiCLIInstallation {
+        GeminiCLIInstallation(
+            configDirectory: AgentProviderAppAuthStore.accountDirectory(for: .gemini, accountID: accountID),
+            executableLocations: Self.defaultExecutableLocations,
+            appManagedAccountID: accountID
+        )
     }
 
     public var oauthCredsFile: URL { configDirectory.appending(path: "oauth_creds.json") }
@@ -82,7 +93,11 @@ public struct GeminiQuotaService: Sendable {
     }
 
     public var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: installation.oauthCredsFile.path)
+        if let accountID = installation.appManagedAccountID {
+            return AgentProviderAppAuthStore.hasSession(provider: .gemini, accountID: accountID)
+        }
+
+        return FileManager.default.fileExists(atPath: installation.oauthCredsFile.path)
     }
 
     public func loadSnapshot() async throws -> AgentQuotaSnapshot {
@@ -171,6 +186,19 @@ public struct GeminiQuotaService: Sendable {
         }
 
         let tokenResponse = try JSONDecoder().decode(GoogleTokenResponse.self, from: data)
+        if let appManagedAccountID = credentials.appManagedAccountID {
+            let refreshedSession = AgentProviderStoredAuthSession(
+                provider: .gemini,
+                accountID: appManagedAccountID,
+                accountLabel: credentials.accountLabel,
+                accessToken: tokenResponse.accessToken,
+                refreshToken: tokenResponse.refreshToken ?? credentials.refreshToken,
+                expiryDate: tokenResponse.expiresIn.map { Date().addingTimeInterval(TimeInterval($0)) },
+                scopes: GeminiOAuthConfiguration.scopes,
+                lastRefresh: Date()
+            )
+            try AgentProviderAppAuthStore.save(session: refreshedSession)
+        }
         logInfo("Gemini ← token refreshed successfully", log: networkLog)
         return tokenResponse.accessToken
     }
@@ -330,23 +358,7 @@ public struct GeminiQuotaService: Sendable {
     }
 
     private func loadOAuthClientConfiguration() throws -> GeminiOAuthClientConfiguration {
-        for sourceFile in installation.oauthClientSourceCandidates {
-            guard FileManager.default.fileExists(atPath: sourceFile.path) else {
-                continue
-            }
-
-            do {
-                let source = try String(contentsOf: sourceFile, encoding: .utf8)
-                let config = try Self.parseOAuthClientConfiguration(source: source)
-                logDebug("[Gemini] OAuth client metadata loaded from \(sourceFile.path)", log: networkLog)
-                return config
-            } catch {
-                logDebug("[Gemini] Failed to parse OAuth client metadata at \(sourceFile.path): \(error)", log: networkLog)
-            }
-        }
-
-        logError("[Gemini] Could not locate Gemini CLI OAuth client metadata for token refresh")
-        throw GeminiQuotaError.missingOAuthClientMetadata
+        try GeminiOAuthConfiguration.loadClient(from: installation)
     }
 
     public static func parseOAuthClientConfiguration(source: String) throws -> GeminiOAuthClientConfiguration {
@@ -364,9 +376,29 @@ public struct GeminiQuotaService: Sendable {
     }
 
     private func loadCredentialsSynchronously(for installation: GeminiCLIInstallation) throws -> GeminiCredentials {
+        if let accountID = installation.appManagedAccountID {
+            guard let session = try AgentProviderAppAuthStore.loadSession(provider: .gemini, accountID: accountID) else {
+                throw GeminiQuotaError.missingAppLogin
+            }
+
+            let accessToken = session.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !accessToken.isEmpty else {
+                throw GeminiQuotaError.missingAccessToken
+            }
+
+            logDebug("[Gemini] AgentBar credentials loaded for \(session.accountLabel)")
+            return GeminiCredentials(
+                accessToken: accessToken,
+                refreshToken: session.refreshToken,
+                expiryDate: session.expiryDate.map { $0.timeIntervalSince1970 * 1000 },
+                accountLabel: session.accountLabel,
+                appManagedAccountID: accountID
+            )
+        }
+
         let oauthFile = installation.oauthCredsFile
         guard FileManager.default.fileExists(atPath: oauthFile.path) else {
-            let msg = "Gemini credentials not found at \(oauthFile.path) — run `gemini` and sign in first"
+            let msg = "Gemini credentials not found at \(oauthFile.path). Sign in from AgentBar settings."
             logError(msg)
             throw GeminiQuotaError.missingCredentialsFile(oauthFile.path)
         }
@@ -403,7 +435,8 @@ public struct GeminiQuotaService: Sendable {
             accessToken: accessToken,
             refreshToken: creds.refreshToken,
             expiryDate: creds.expiryDate,
-            accountLabel: accountLabel
+            accountLabel: accountLabel,
+            appManagedAccountID: nil
         )
     }
 
@@ -445,6 +478,7 @@ public struct GeminiQuotaService: Sendable {
 
 public enum GeminiQuotaError: LocalizedError, Equatable {
     case missingCredentialsFile(String)
+    case missingAppLogin
     case missingAccessToken
     case missingRefreshToken
     case missingOAuthClientMetadata
@@ -455,13 +489,15 @@ public enum GeminiQuotaError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case let .missingCredentialsFile(path):
-            return "Gemini credentials not found at \(path). Run `gemini` and sign in first."
+            return "Gemini credentials not found at \(path). Sign in from AgentBar settings."
+        case .missingAppLogin:
+            return "No AgentBar Gemini browser login was found. Sign in from AgentBar settings."
         case .missingAccessToken:
-            return "No Gemini access token found. Run `gemini` and sign in."
+            return "No Gemini access token found. Sign in from AgentBar settings."
         case .missingRefreshToken:
-            return "Gemini access token expired and no refresh token available. Run `gemini` and sign in again."
+            return "Gemini access token expired and no refresh token is available. Sign in from AgentBar settings."
         case .missingOAuthClientMetadata:
-            return "Gemini access token expired and AgentBar could not find OAuth client metadata in the local Gemini CLI installation."
+            return "Gemini access token expired and AgentBar could not refresh it."
         case let .tokenRefreshFailed(code, message):
             return "Gemini token refresh failed with HTTP \(code): \(message)"
         case .invalidResponse:
@@ -486,9 +522,41 @@ private struct GeminiGoogleAccounts: Decodable {
 
 private struct GoogleTokenResponse: Decodable {
     let accessToken: String
+    let refreshToken: String?
+    let expiresIn: Int?
 
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresIn = "expires_in"
+    }
+}
+
+public enum GeminiOAuthConfiguration {
+    public static let scopes = [
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile"
+    ]
+    public static let authorizationURL = URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!
+    public static let tokenURL = URL(string: "https://oauth2.googleapis.com/token")!
+    public static let userInfoURL = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
+
+    public static func loadClient(from installation: GeminiCLIInstallation = .default) throws -> GeminiOAuthClientConfiguration {
+        for sourceFile in installation.oauthClientSourceCandidates {
+            guard FileManager.default.fileExists(atPath: sourceFile.path) else {
+                continue
+            }
+
+            do {
+                let source = try String(contentsOf: sourceFile, encoding: .utf8)
+                return try GeminiQuotaService.parseOAuthClientConfiguration(source: source)
+            } catch {
+                continue
+            }
+        }
+
+        throw GeminiQuotaError.missingOAuthClientMetadata
     }
 }
 
@@ -507,6 +575,7 @@ struct GeminiCredentials: Sendable {
     let refreshToken: String?
     let expiryDate: Double?
     let accountLabel: String
+    let appManagedAccountID: String?
 }
 
 struct GeminiCodeAssistInfo: Sendable {

@@ -3,7 +3,7 @@
 Minimal macOS menu-bar app that tracks coding-agent quota usage.
 Written in Swift 6 / SwiftUI, targeting macOS 14+.
 
-All three providers — Codex, GitHub Copilot, and Gemini — are displayed **simultaneously**. Credentials are auto-detected from local CLI login files — no manual setup required.
+Codex, GitHub Copilot, and Gemini are displayed **simultaneously** after AgentBar-owned browser sign-in. Tokens are stored in macOS Keychain entries owned by AgentBar, so CLI or IDE profile changes do not silently switch the accounts shown in AgentBar.
 
 ---
 
@@ -17,11 +17,11 @@ Sources/AgentBar/
 ├── Models/
 │   └── AgentQuotaModels.swift  AgentProviderKind, AgentQuotaSnapshot, AgentQuotaMetric
 ├── Codex/
-│   └── CodexQuotaService.swift  Reads ~/.codex/auth.json, calls ChatGPT Codex backend API
+│   └── CodexQuotaService.swift  Uses AgentBar Keychain auth, calls ChatGPT Codex backend API
 ├── GitHubCopilot/
-│   └── GitHubCopilotQuotaService.swift  Reads ~/.config/github-copilot/apps.json, calls copilot_internal/user API
+│   └── GitHubCopilotQuotaService.swift  Uses AgentBar Keychain auth, calls copilot_internal/user API
 ├── Gemini/
-│   └── GeminiQuotaService.swift  Reads ~/.gemini/oauth_creds.json, calls Google Cloud Code Assist API
+│   └── GeminiQuotaService.swift  Uses AgentBar Keychain auth, calls Google Cloud Code Assist API
 ├── OpenAI/
 │   └── KeychainSecretStore.swift  Generic Keychain read/write/delete helper
 └── Views/
@@ -45,10 +45,10 @@ All providers are fetched **concurrently** every 30 seconds. Each provider secti
 |---|---|
 | API endpoint | `GET https://chatgpt.com/backend-api/wham/usage` |
 | Auth headers | `Authorization: Bearer <access_token>` `ChatGPT-Account-Id: <account_id>` |
-| Credentials source | `~/.codex/auth.json` (populated by the Codex CLI after `codex` login) |
+| Credentials source | AgentBar browser login stored in macOS Keychain |
 | Displayed metrics | 5-hour usage window, weekly usage window |
 
-The service reads `auth.json` synchronously off the main thread (`Task.detached`), extracts `tokens.access_token` and `tokens.account_id`, then makes the HTTP request.  Auth mode `api_key` is explicitly rejected because quota windows are not available for API-key sessions.
+The service loads the AgentBar-stored access token and ChatGPT account id from Keychain, refreshes the token when needed, then makes the HTTP request. AgentBar does not read `~/.codex/auth.json`.
 
 ### GitHub Copilot (`AgentProviderKind.githubCopilot`)
 
@@ -56,10 +56,10 @@ The service reads `auth.json` synchronously off the main thread (`Task.detached`
 |---|---|
 | API endpoint | `GET https://api.github.com/copilot_internal/user` |
 | Auth headers | `Authorization: Bearer <oauth_token>` |
-| Credentials source | `~/.config/github-copilot/apps.json` (populated automatically by any Copilot IDE extension — VS Code, JetBrains, etc.) |
+| Credentials source | AgentBar GitHub browser login stored in macOS Keychain |
 | Displayed metric | Monthly premium-request usage vs. plan allowance |
 
-No manual setup required — the app reads `oauth_token` from the first valid entry in `apps.json`.
+The app uses GitHub's browser/device authorization flow and stores the resulting OAuth token in AgentBar's Keychain service. AgentBar does not read `~/.config/github-copilot/apps.json` or IDE Copilot keychain entries by default.
 
 The `copilot_internal/user` endpoint returns `quota_snapshots.premium_interactions` with:
 - `remaining` — requests remaining this cycle
@@ -77,15 +77,15 @@ The `copilot_internal/user` endpoint returns `quota_snapshots.premium_interactio
 | API endpoints | `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` (get project ID + tier) → `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` (get per-model quota buckets) |
 | Auth headers | `Authorization: Bearer <access_token>` |
 | Token refresh | `POST https://oauth2.googleapis.com/token` with `refresh_token` + Gemini CLI client ID/secret |
-| Credentials source | `~/.gemini/oauth_creds.json` (populated by the Gemini CLI after `gemini` login) |
-| Account label | Read from `~/.gemini/google_accounts.json` `active` field |
+| Credentials source | AgentBar Google browser login stored in macOS Keychain |
+| Account label | Read from the Google OAuth userinfo response |
 | Displayed metrics | Per-model request quota (e.g. Gemini 2.5 Flash, Gemini 3 Flash Preview) |
 
 **Shared quota**: Gemini CLI and Antigravity IDE use the same Google account and Cloud Code Assist quota. The Gemini provider covers both tools.
 
 The service:
-1. Reads `oauth_creds.json` for `access_token`, `refresh_token`, and `expiry_date`
-2. Refreshes the token via Google OAuth if expired (using OAuth client metadata discovered from the local Gemini CLI installation)
+1. Loads AgentBar-stored `access_token`, `refresh_token`, and expiry from Keychain
+2. Refreshes the token via Google OAuth if expired
 3. Calls `loadCodeAssist` to get the project ID and user tier (Free, Legacy, Standard)
 4. Calls `retrieveUserQuota` to get per-model quota buckets
 5. Filters out unavailable models (those with `remainingFraction: 0` and epoch reset time)
@@ -128,10 +128,13 @@ AgentQuotaMetric
 
 ## Persistence
 
-Credentials are **not** stored by AgentBar — they are read live from local login files on every refresh:
-- Codex: `~/.codex/auth.json`
-- GitHub Copilot: `~/.config/github-copilot/apps.json`
-- Gemini: `~/.gemini/oauth_creds.json`
+Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers live under:
+- Codex: `~/Library/Application Support/AgentBar/CodexAccounts`
+- GitHub Copilot: `~/Library/Application Support/AgentBar/GitHubCopilotAccounts`
+- Gemini: `~/Library/Application Support/AgentBar/GeminiAccounts`
+- Claude: `~/.config/claude-code/auth.json` (read-only local Claude Code auth detection)
+
+AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, or Gemini by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
 
 ---
 

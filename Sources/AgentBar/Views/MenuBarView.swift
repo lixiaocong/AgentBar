@@ -101,16 +101,22 @@ struct MenuBarView: View {
         let style = providerHeaderStyle(for: provider)
         let snapshot = model.snapshot(for: provider)
         let error = model.errorMessage(for: provider)
+        let statusTint = panelTint(
+            metric: snapshot?.highlightMetric,
+            error: error,
+            fallback: style.tint
+        )
 
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(style.eyebrow)
                     .font(.system(.caption2, design: .rounded).weight(.black))
                     .tracking(1)
-                    .foregroundStyle(style.tint)
+                    .foregroundStyle(statusTint)
 
                 Text(style.title)
                     .font(.system(.title3, design: .rounded).weight(.heavy))
+                    .foregroundStyle(statusTint)
 
                 Text(accountCount == 1 ? "1 account" : "\(accountCount) accounts")
                     .font(.caption.weight(.medium))
@@ -124,6 +130,7 @@ struct MenuBarView: View {
                     Text(metric.percentText)
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         .monospacedDigit()
+                        .foregroundStyle(statusTint)
 
                     Text("remaining")
                         .font(.caption.weight(.semibold))
@@ -131,6 +138,7 @@ struct MenuBarView: View {
                 } else if snapshot != nil {
                     Text("Ready")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundStyle(statusTint)
 
                     Text("linked")
                         .font(.caption.weight(.semibold))
@@ -138,6 +146,7 @@ struct MenuBarView: View {
                 } else if error != nil {
                     Text("!")
                         .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(statusTint)
 
                     Text("error")
                         .font(.caption.weight(.semibold))
@@ -145,6 +154,7 @@ struct MenuBarView: View {
                 } else {
                     Text("...")
                         .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .foregroundStyle(statusTint)
 
                     Text("loading")
                         .font(.caption.weight(.semibold))
@@ -154,10 +164,10 @@ struct MenuBarView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(statusTint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(style.tint.opacity(0.18), lineWidth: 1)
+                .stroke(statusTint.opacity(0.18), lineWidth: 1)
         }
     }
 
@@ -182,9 +192,14 @@ struct MenuBarView: View {
     @ViewBuilder
     private func accountSection(_ status: AgentAccountStatus) -> some View {
         let style = providerHeaderStyle(for: status.provider)
+        let statusTint = panelTint(
+            metric: status.snapshot?.highlightMetric,
+            error: status.errorMessage,
+            fallback: style.tint
+        )
 
         VStack(alignment: .leading, spacing: 8) {
-            accountHeader(status, snapshot: status.snapshot)
+            accountHeader(status, snapshot: status.snapshot, statusTint: statusTint)
 
             if let snapshot = status.snapshot {
                 ForEach(snapshot.metrics) { metric in
@@ -209,28 +224,31 @@ struct MenuBarView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.tint.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(statusTint.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(style.tint.opacity(0.12), lineWidth: 1)
+                .stroke(statusTint.opacity(0.16), lineWidth: 1)
         }
     }
 
     @ViewBuilder
     private func accountHeader(
         _ status: AgentAccountStatus,
-        snapshot: AgentQuotaSnapshot?
+        snapshot: AgentQuotaSnapshot?,
+        statusTint: Color
     ) -> some View {
-        let style = providerHeaderStyle(for: status.provider)
-
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(snapshot?.accountLabel ?? "Configured account")
+                NonHyphenatingLabel(snapshot?.accountLabel ?? status.accountLabel ?? "Configured account")
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(statusTint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
 
                 Text(status.provider.title)
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(style.tint)
+                    .foregroundStyle(statusTint)
             }
 
             Spacer()
@@ -240,6 +258,7 @@ struct MenuBarView: View {
                     Text(metric.percentText)
                         .font(.system(size: 18, weight: .bold, design: .rounded))
                         .monospacedDigit()
+                        .foregroundStyle(statusTint)
 
                     Text("remaining")
                         .font(.caption2.weight(.semibold))
@@ -247,6 +266,7 @@ struct MenuBarView: View {
                 } else if snapshot != nil {
                     Text("Ready")
                         .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(statusTint)
 
                     Text("linked")
                         .font(.caption2.weight(.semibold))
@@ -254,6 +274,7 @@ struct MenuBarView: View {
                 } else if status.errorMessage != nil {
                     Text("!")
                         .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(statusTint)
 
                     Text("error")
                         .font(.caption2.weight(.semibold))
@@ -261,6 +282,7 @@ struct MenuBarView: View {
                 } else {
                     Text("...")
                         .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(statusTint)
 
                     Text("loading")
                         .font(.caption2.weight(.semibold))
@@ -296,7 +318,27 @@ struct MenuBarView: View {
     }
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
-        switch metric.remainingPercent {
+        quotaTint(for: metric.remainingPercent)
+    }
+
+    private func panelTint(
+        metric: AgentQuotaMetric?,
+        error: String?,
+        fallback: Color
+    ) -> Color {
+        if error != nil {
+            return .red
+        }
+
+        guard let metric else {
+            return fallback
+        }
+
+        return quotaTint(for: metric.remainingPercent)
+    }
+
+    private func quotaTint(for remainingPercent: Double) -> Color {
+        switch remainingPercent {
         case 75...:
             return .green
         case 45..<75:
@@ -355,5 +397,23 @@ private struct MenuBarContentSizePreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         value = nextValue()
+    }
+}
+
+struct NonHyphenatingLabel: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(verbatim: Self.displayText(for: text))
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    nonisolated static func displayText(for text: String) -> String {
+        text.replacingOccurrences(of: "\u{00AD}", with: "")
     }
 }

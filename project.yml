@@ -21,10 +21,13 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.menu
         PRODUCT_NAME: AgentBar
         INFOPLIST_FILE: Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
         CODE_SIGN_ENTITLEMENTS: Resources/AgentBar.entitlements
         SWIFT_EMIT_LOC_STRINGS: NO
     dependencies:
@@ -43,10 +46,13 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.app.widget
+        PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.menu.widget
         PRODUCT_NAME: AgentBarWidgetExtension
         INFOPLIST_FILE: Resources/WidgetExtensionInfo.plist
         GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
         APPLICATION_EXTENSION_API_ONLY: YES
         CODE_SIGN_ENTITLEMENTS: Resources/AgentBarWidget.entitlements
         SWIFT_EMIT_LOC_STRINGS: NO

@@ -3,13 +3,27 @@ import os
 
 public struct CodexInstallation: Sendable {
     public let rootDirectory: URL
+    public let appManagedAccountID: String?
 
     public static let `default` = CodexInstallation(
-        rootDirectory: URL(fileURLWithPath: NSString(string: "~/.codex").expandingTildeInPath)
+        rootDirectory: CodexAppAuthStore.accountsDirectory
     )
 
     public init(rootDirectory: URL) {
         self.rootDirectory = rootDirectory
+        self.appManagedAccountID = nil
+    }
+
+    private init(rootDirectory: URL, appManagedAccountID: String) {
+        self.rootDirectory = rootDirectory
+        self.appManagedAccountID = appManagedAccountID
+    }
+
+    public static func appManaged(accountID: String) -> CodexInstallation {
+        CodexInstallation(
+            rootDirectory: CodexAppAuthStore.accountDirectory(for: accountID),
+            appManagedAccountID: accountID
+        )
     }
 
     public var authFile: URL {
@@ -25,16 +39,32 @@ public struct CodexQuotaService: Sendable {
     }
 
     public var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: installation.authFile.path)
+        if let accountID = installation.appManagedAccountID {
+            return CodexAppAuthStore.hasSession(accountID: accountID)
+        }
+
+        return FileManager.default.fileExists(atPath: installation.authFile.path)
     }
 
     public func loadSnapshot() async throws -> AgentQuotaSnapshot {
         let installation = installation
-        let credentials = try await Task.detached(priority: .userInitiated) {
+        var credentials = try await Task.detached(priority: .userInitiated) {
             try loadCredentialsSynchronously(for: installation)
         }.value
 
-        return try await loadSnapshot(credentials: credentials)
+        credentials = try await refreshAppManagedCredentialsIfNeeded(credentials)
+
+        do {
+            return try await loadSnapshot(credentials: credentials)
+        } catch let error as CodexQuotaError where error.isAuthenticationFailure && credentials.appManagedAccountID != nil {
+            let refreshedCredentials = try await refreshAppManagedCredentialsIfNeeded(credentials, force: true)
+            guard refreshedCredentials.accessToken != credentials.accessToken else {
+                throw error
+            }
+
+            logInfo("[Codex] Retrying usage request with refreshed AgentBar credentials")
+            return try await loadSnapshot(credentials: refreshedCredentials)
+        }
     }
 
     private func loadSnapshot(credentials: CodexAuthCredentials) async throws -> AgentQuotaSnapshot {
@@ -98,6 +128,34 @@ public struct CodexQuotaService: Sendable {
     }
 
     private func loadCredentialsSynchronously(for installation: CodexInstallation) throws -> CodexAuthCredentials {
+        if let accountID = installation.appManagedAccountID {
+            guard let session = try CodexAppAuthStore.loadSession(accountID: accountID) else {
+                let error = CodexQuotaError.missingStoredCredentials(accountID)
+                logError("[Codex] \(error.errorDescription ?? "\(error)")")
+                throw error
+            }
+
+            let accessToken = session.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !accessToken.isEmpty else {
+                logError("[Codex] \(CodexQuotaError.missingAccessToken.errorDescription!)")
+                throw CodexQuotaError.missingAccessToken
+            }
+
+            let accountLabel = preferredAccountLabel(
+                idToken: session.idToken,
+                fallbackAccountID: session.accountID
+            )
+            logDebug("[Codex] AgentBar credentials loaded for account \(masked(session.accountID))")
+            return CodexAuthCredentials(
+                accessToken: accessToken,
+                refreshToken: session.refreshToken,
+                idToken: session.idToken,
+                accountID: session.accountID,
+                accountLabel: accountLabel,
+                appManagedAccountID: accountID
+            )
+        }
+
         let rootDirectory = installation.rootDirectory
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: rootDirectory.path) else {
@@ -143,16 +201,23 @@ public struct CodexQuotaService: Sendable {
 
         let accountLabel = preferredAccountLabel(idToken: auth.tokens?.idToken, fallbackAccountID: accountID)
         logDebug("[Codex] Credentials loaded for account \(masked(accountID))")
-        return CodexAuthCredentials(accessToken: accessToken, accountID: accountID, accountLabel: accountLabel)
+        return CodexAuthCredentials(
+            accessToken: accessToken,
+            refreshToken: auth.tokens?.refreshToken,
+            idToken: auth.tokens?.idToken,
+            accountID: accountID,
+            accountLabel: accountLabel,
+            appManagedAccountID: nil
+        )
     }
 
     public func preferredAccountLabel(idToken: String?, fallbackAccountID: String) -> String {
-        if let claims = decodeIDTokenClaims(from: idToken) {
-            if let email = claims.email?.trimmingCharacters(in: .whitespacesAndNewlines), !email.isEmpty {
+        if let idToken, let identity = CodexAppAuthStore.identity(from: idToken) {
+            if let email = identity.email?.trimmingCharacters(in: .whitespacesAndNewlines), !email.isEmpty {
                 return email
             }
 
-            if let name = claims.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            if let name = identity.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
                 return name
             }
         }
@@ -160,12 +225,78 @@ public struct CodexQuotaService: Sendable {
         return "Account \(masked(fallbackAccountID))"
     }
 
-    private func decodeIDTokenClaims(from idToken: String?) -> CodexIDTokenClaims? {
-        guard let idToken, !idToken.isEmpty else {
-            return nil
+    private func masked(_ value: String) -> String {
+        guard value.count > 8 else {
+            return value
         }
 
-        let segments = idToken.split(separator: ".")
+        return "\(value.prefix(4))...\(value.suffix(4))"
+    }
+
+    private func refreshAppManagedCredentialsIfNeeded(
+        _ credentials: CodexAuthCredentials,
+        force: Bool = false
+    ) async throws -> CodexAuthCredentials {
+        guard let appManagedAccountID = credentials.appManagedAccountID else {
+            return credentials
+        }
+
+        guard force || shouldRefresh(accessToken: credentials.accessToken) else {
+            return credentials
+        }
+
+        guard let refreshToken = credentials.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !refreshToken.isEmpty else {
+            return credentials
+        }
+
+        let response = try await requestTokenRefresh(refreshToken: refreshToken)
+        let updatedIDToken = response.idToken ?? credentials.idToken ?? ""
+        let updatedAccessToken = response.accessToken ?? credentials.accessToken
+        let updatedRefreshToken = response.refreshToken ?? refreshToken
+        let returnedAccountID = CodexAppAuthStore.identity(from: updatedIDToken)?.accountID ?? credentials.accountID
+
+        guard returnedAccountID == credentials.accountID else {
+            throw CodexQuotaError.refreshFailed("Token refresh returned a different Codex account.")
+        }
+
+        let session = CodexStoredAuthSession(
+            idToken: updatedIDToken,
+            accessToken: updatedAccessToken,
+            refreshToken: updatedRefreshToken,
+            accountID: credentials.accountID,
+            localAccountID: appManagedAccountID,
+            lastRefresh: Date()
+        )
+        try CodexAppAuthStore.save(session: session)
+        try? CodexAppAuthStore.ensureAccountDirectoryExists(for: appManagedAccountID)
+
+        let accountLabel = preferredAccountLabel(
+            idToken: updatedIDToken,
+            fallbackAccountID: credentials.accountID
+        )
+        logInfo("[Codex] AgentBar credentials refreshed for account \(masked(credentials.accountID))")
+
+        return CodexAuthCredentials(
+            accessToken: updatedAccessToken,
+            refreshToken: updatedRefreshToken,
+            idToken: updatedIDToken,
+            accountID: credentials.accountID,
+            accountLabel: accountLabel,
+            appManagedAccountID: appManagedAccountID
+        )
+    }
+
+    private func shouldRefresh(accessToken: String) -> Bool {
+        guard let expiresAt = jwtExpirationDate(accessToken) else {
+            return false
+        }
+
+        return expiresAt <= Date().addingTimeInterval(60)
+    }
+
+    private func jwtExpirationDate(_ jwt: String) -> Date? {
+        let segments = jwt.split(separator: ".")
         guard segments.count >= 2 else {
             return nil
         }
@@ -179,48 +310,84 @@ public struct CodexQuotaService: Sendable {
             payload += String(repeating: "=", count: 4 - remainder)
         }
 
-        guard let payloadData = Data(base64Encoded: payload) else {
+        guard let data = Data(base64Encoded: payload),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let expiration = object["exp"] as? TimeInterval else {
             return nil
         }
 
-        let decoder = JSONDecoder()
-        return try? decoder.decode(CodexIDTokenClaims.self, from: payloadData)
+        return Date(timeIntervalSince1970: expiration)
     }
 
-    private func masked(_ value: String) -> String {
-        guard value.count > 8 else {
-            return value
+    private func requestTokenRefresh(refreshToken: String) async throws -> CodexRefreshResponse {
+        var request = URLRequest(url: CodexOAuthConfiguration.tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = formURLEncoded([
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refreshToken),
+            ("client_id", CodexOAuthConfiguration.clientID)
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexQuotaError.invalidResponse
         }
 
-        return "\(value.prefix(4))...\(value.suffix(4))"
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "Request failed."
+            throw CodexQuotaError.refreshFailed("HTTP \(httpResponse.statusCode): \(body)")
+        }
+
+        return try JSONDecoder().decode(CodexRefreshResponse.self, from: data)
+    }
+
+    private func formURLEncoded(_ items: [(String, String)]) -> Data {
+        let allowed = CharacterSet.urlQueryAllowed.subtracting(
+            CharacterSet(charactersIn: ":#[]@!$&'()*+,;=")
+        )
+        let body = items.map { key, value in
+            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
+            let encodedValue = value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+            return "\(encodedKey)=\(encodedValue)"
+        }
+        .joined(separator: "&")
+
+        return Data(body.utf8)
     }
 }
 
 public enum CodexQuotaError: LocalizedError, Equatable {
     case missingCodexDirectory(String)
+    case missingStoredCredentials(String)
     case unsupportedAuthMode
     case missingAccessToken
     case missingAccountID
     case invalidResponse
     case httpStatus(Int, message: String)
     case noQuotaInResponse
+    case refreshFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case let .missingCodexDirectory(path):
             return "Codex root not found at \(path)."
+        case .missingStoredCredentials:
+            return "No AgentBar Codex browser login was found. Sign in from AgentBar settings."
         case .unsupportedAuthMode:
             return "Codex cloud quota requires ChatGPT login credentials, not an API-key-only login."
         case .missingAccessToken:
-            return "No Codex access token was found. Run `codex` and sign in again."
+            return "No Codex access token was found. Sign in from AgentBar settings."
         case .missingAccountID:
-            return "No ChatGPT account id was found for Codex. Run `codex` and sign in again."
+            return "No ChatGPT account id was found for Codex. Sign in from AgentBar settings."
         case .invalidResponse:
             return "The Codex usage API returned an invalid response."
         case let .httpStatus(code, message):
             return "The Codex usage API failed with HTTP \(code): \(message)"
         case .noQuotaInResponse:
             return "The Codex usage API response did not include 5-hour or weekly quota windows."
+        case let .refreshFailed(message):
+            return "Codex browser login refresh failed: \(message)"
         }
     }
 }
@@ -233,18 +400,17 @@ private struct CodexStoredAuth: Decodable {
 private struct CodexStoredTokens: Decodable {
     let idToken: String?
     let accessToken: String?
+    let refreshToken: String?
     let accountId: String?
 }
 
 private struct CodexAuthCredentials: Sendable {
     let accessToken: String
+    let refreshToken: String?
+    let idToken: String?
     let accountID: String
     let accountLabel: String
-}
-
-private struct CodexIDTokenClaims: Decodable {
-    let email: String?
-    let name: String?
+    let appManagedAccountID: String?
 }
 
 private struct CodexUsagePayload: Decodable {
@@ -268,5 +434,27 @@ private struct CodexUsageWindow: Decodable {
             usedPercent: usedPercent,
             resetsAt: Date(timeIntervalSince1970: resetAt)
         )
+    }
+}
+
+private struct CodexRefreshResponse: Decodable {
+    let idToken: String?
+    let accessToken: String?
+    let refreshToken: String?
+
+    enum CodingKeys: String, CodingKey {
+        case idToken = "id_token"
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+    }
+}
+
+private extension CodexQuotaError {
+    var isAuthenticationFailure: Bool {
+        guard case let .httpStatus(code, _) = self else {
+            return false
+        }
+
+        return code == 401 || code == 403
     }
 }

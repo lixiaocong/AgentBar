@@ -1,17 +1,39 @@
 import Foundation
 import os
+import Security
 
 // MARK: - CLI Installation
 
 public struct GitHubCopilotCLIInstallation: Sendable {
     public let configDirectory: URL
+    public let appManagedAccountID: String?
+    public let allowsLegacyCredentialLookup: Bool
 
     public static let `default` = GitHubCopilotCLIInstallation(
-        configDirectory: URL(fileURLWithPath: NSString(string: "~/.config/github-copilot").expandingTildeInPath)
+        configDirectory: AgentProviderAppAuthStore.accountsDirectory(for: .githubCopilot),
+        appManagedAccountID: nil,
+        allowsLegacyCredentialLookup: false
     )
 
-    public init(configDirectory: URL) {
+    public init(
+        configDirectory: URL,
+        appManagedAccountID: String? = nil,
+        allowsLegacyCredentialLookup: Bool = true
+    ) {
         self.configDirectory = configDirectory
+        self.appManagedAccountID = appManagedAccountID
+        self.allowsLegacyCredentialLookup = allowsLegacyCredentialLookup
+    }
+
+    public static func appManaged(accountID: String) -> GitHubCopilotCLIInstallation {
+        GitHubCopilotCLIInstallation(
+            configDirectory: AgentProviderAppAuthStore.accountDirectory(
+                for: .githubCopilot,
+                accountID: accountID
+            ),
+            appManagedAccountID: accountID,
+            allowsLegacyCredentialLookup: false
+        )
     }
 
     public var appsFile: URL {
@@ -29,7 +51,16 @@ public struct GitHubCopilotQuotaService: Sendable {
     }
 
     public var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: installation.appsFile.path)
+        if let accountID = installation.appManagedAccountID {
+            return AgentProviderAppAuthStore.hasSession(provider: .githubCopilot, accountID: accountID)
+        }
+
+        guard installation.allowsLegacyCredentialLookup else {
+            return false
+        }
+
+        return FileManager.default.fileExists(atPath: installation.appsFile.path) ||
+            keychainOAuthToken != nil
     }
 
     public func loadSnapshot() async throws -> AgentQuotaSnapshot {
@@ -43,11 +74,19 @@ public struct GitHubCopilotQuotaService: Sendable {
 
     /// Exposed for unit tests — skips credential file reading.
     public func decodeSnapshot(from data: Data, updatedAt: Date) throws -> AgentQuotaSnapshot {
+        try decodeSnapshot(from: data, profile: nil, updatedAt: updatedAt)
+    }
+
+    private func decodeSnapshot(
+        from data: Data,
+        profile: GitHubUserProfileResponse?,
+        updatedAt: Date
+    ) throws -> AgentQuotaSnapshot {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         do {
             let response = try decoder.decode(GitHubCopilotUserResponse.self, from: data)
-            return buildSnapshot(from: response, updatedAt: updatedAt)
+            return buildSnapshot(from: response, profile: profile, updatedAt: updatedAt)
         } catch {
             logError("GitHub Copilot JSON decode failed: \(error) — body: \(String(data: data, encoding: .utf8) ?? "<non-UTF8>")", log: networkLog)
             throw error
@@ -79,10 +118,69 @@ public struct GitHubCopilotQuotaService: Sendable {
             throw GitHubCopilotQuotaError.httpStatus(httpResponse.statusCode, message: body)
         }
 
-        return try decodeSnapshot(from: data, updatedAt: Date())
+        let profile = await loadGitHubUserProfile(oauthToken: oauthToken)
+        return try decodeSnapshot(from: data, profile: profile, updatedAt: Date())
     }
 
-    private func buildSnapshot(from response: GitHubCopilotUserResponse, updatedAt: Date) -> AgentQuotaSnapshot {
+    private func loadGitHubUserProfile(oauthToken: String) async -> GitHubUserProfileResponse? {
+        do {
+            let profile = try await fetchGitHubUserProfile(oauthToken: oauthToken)
+            let primaryEmail = try? await fetchPrimaryGitHubEmail(oauthToken: oauthToken)
+            return GitHubUserProfileResponse(
+                login: profile.login,
+                email: primaryEmail ?? profile.email,
+                name: profile.name
+            )
+        } catch {
+            logDebug("[Copilot] GitHub profile lookup skipped: \(error)")
+            return nil
+        }
+    }
+
+    private func fetchGitHubUserProfile(oauthToken: String) async throws -> GitHubUserProfileResponse {
+        let url = URL(string: "https://api.github.com/user")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(oauthToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("agent-bar", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200 ... 299).contains(httpResponse.statusCode) else {
+            throw GitHubCopilotQuotaError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(GitHubUserProfileResponse.self, from: data)
+    }
+
+    private func fetchPrimaryGitHubEmail(oauthToken: String) async throws -> String? {
+        let url = URL(string: "https://api.github.com/user/emails")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(oauthToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("agent-bar", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200 ... 299).contains(httpResponse.statusCode) else {
+            throw GitHubCopilotQuotaError.invalidResponse
+        }
+
+        let emails = try JSONDecoder().decode([GitHubEmailResponse].self, from: data)
+        return emails
+            .filter { $0.verified == true }
+            .sorted { lhs, rhs in
+                (lhs.primary == true ? 0 : 1) < (rhs.primary == true ? 0 : 1)
+            }
+            .compactMap { Self.cleanDisplayValue($0.email) }
+            .first
+    }
+
+    private func buildSnapshot(
+        from response: GitHubCopilotUserResponse,
+        profile: GitHubUserProfileResponse?,
+        updatedAt: Date
+    ) -> AgentQuotaSnapshot {
         let pi = response.quotaSnapshots?.premiumInteractions
         let resetsAt = parseResetDate(response.quotaResetDateUtc, fallback: updatedAt)
 
@@ -111,7 +209,11 @@ public struct GitHubCopilotQuotaService: Sendable {
 
         return AgentQuotaSnapshot(
             provider: .githubCopilot,
-            accountLabel: "@\(response.login ?? "unknown")",
+            accountLabel: Self.preferredAccountLabel(
+                email: profile?.email ?? response.email,
+                name: profile?.name ?? response.name,
+                login: profile?.login ?? response.login
+            ),
             planType: response.copilotPlan,
             modelName: nil,
             sourceSummary: "GitHub Copilot API",
@@ -121,42 +223,90 @@ public struct GitHubCopilotQuotaService: Sendable {
     }
 
     private func loadCredentialsSynchronously(for installation: GitHubCopilotCLIInstallation) throws -> GitHubCopilotCLICredentials {
+        if let accountID = installation.appManagedAccountID {
+            guard let session = try AgentProviderAppAuthStore.loadSession(
+                provider: .githubCopilot,
+                accountID: accountID
+            ) else {
+                throw GitHubCopilotQuotaError.missingAppLogin
+            }
+
+            let token = session.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !token.isEmpty else {
+                throw GitHubCopilotQuotaError.missingCredentials
+            }
+
+            logDebug("[Copilot] AgentBar credentials loaded for \(session.accountLabel)")
+            return GitHubCopilotCLICredentials(oauthToken: token)
+        }
+
+        guard installation.allowsLegacyCredentialLookup else {
+            throw GitHubCopilotQuotaError.missingAppLogin
+        }
+
         let appsFile = installation.appsFile
-        guard FileManager.default.fileExists(atPath: appsFile.path) else {
-            let msg = "GitHub Copilot apps.json not found at \(appsFile.path) — log in with a Copilot IDE extension first"
-            logError(msg)
-            throw GitHubCopilotQuotaError.missingCredentialsFile(appsFile.path)
+
+        if FileManager.default.fileExists(atPath: appsFile.path) {
+            let data: Data
+            do {
+                data = try Data(contentsOf: appsFile)
+            } catch {
+                logError("[Copilot] Cannot read apps.json: \(error)")
+                throw error
+            }
+
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+            let entries: [String: GitHubCopilotCLIAppEntry]
+            do {
+                entries = try decoder.decode([String: GitHubCopilotCLIAppEntry].self, from: data)
+            } catch {
+                logError("[Copilot] apps.json decode failed: \(error)")
+                throw error
+            }
+
+            if let token = entries.values
+                .compactMap({ $0.oauthToken?.trimmingCharacters(in: .whitespacesAndNewlines) })
+                .first(where: { !$0.isEmpty })
+            {
+                logDebug("[Copilot] Credentials loaded from \(appsFile.path)")
+                return GitHubCopilotCLICredentials(oauthToken: token)
+            }
         }
 
-        let data: Data
-        do {
-            data = try Data(contentsOf: appsFile)
-        } catch {
-            logError("[Copilot] Cannot read apps.json: \(error)")
-            throw error
+        // Fall back to macOS Keychain (used by GitHub Copilot CLI and JetBrains/IntelliJ plugin)
+        if let token = keychainOAuthToken {
+            logDebug("[Copilot] Credentials loaded from macOS Keychain (service: copilot-cli)")
+            return GitHubCopilotCLICredentials(oauthToken: token)
         }
 
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let msg = "GitHub Copilot credentials not found. Sign in from AgentBar settings."
+        logError(msg)
+        throw GitHubCopilotQuotaError.missingCredentialsFile(appsFile.path)
+    }
 
-        let entries: [String: GitHubCopilotCLIAppEntry]
-        do {
-            entries = try decoder.decode([String: GitHubCopilotCLIAppEntry].self, from: data)
-        } catch {
-            logError("[Copilot] apps.json decode failed: \(error)")
-            throw error
-        }
+    /// Reads the OAuth token stored by the GitHub Copilot CLI / JetBrains plugin in macOS Keychain.
+    private var keychainOAuthToken: String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "copilot-cli",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
 
-        guard let token = entries.values
-            .compactMap({ $0.oauthToken?.trimmingCharacters(in: .whitespacesAndNewlines) })
-            .first(where: { !$0.isEmpty })
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let token = String(data: data, encoding: .utf8)
         else {
-            logError("[Copilot] No valid oauth_token found in apps.json — try re-logging in to your Copilot IDE extension")
-            throw GitHubCopilotQuotaError.missingCredentials
+            return nil
         }
 
-        logDebug("[Copilot] Credentials loaded from \(appsFile.path)")
-        return GitHubCopilotCLICredentials(oauthToken: token)
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func parseResetDate(_ dateString: String?, fallback: Date) -> Date {
@@ -166,6 +316,31 @@ public struct GitHubCopilotQuotaService: Sendable {
         return formatter.date(from: dateString)
             ?? ISO8601DateFormatter().date(from: dateString)
             ?? nextUTCMonthBoundary(from: fallback)
+    }
+
+    private static func preferredAccountLabel(email: String?, name: String?, login: String?) -> String {
+        if let email = cleanDisplayValue(email) {
+            return email
+        }
+
+        if let name = cleanDisplayValue(name) {
+            return name
+        }
+
+        if let login = cleanDisplayValue(login) {
+            return "@\(login)"
+        }
+
+        return "GitHub Account"
+    }
+
+    private static func cleanDisplayValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
     }
 
     private func nextUTCMonthBoundary(from date: Date) -> Date {
@@ -185,6 +360,7 @@ public struct GitHubCopilotQuotaService: Sendable {
 
 enum GitHubCopilotQuotaError: LocalizedError {
     case missingCredentialsFile(String)
+    case missingAppLogin
     case missingCredentials
     case invalidResponse
     case httpStatus(Int, message: String)
@@ -192,9 +368,11 @@ enum GitHubCopilotQuotaError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .missingCredentialsFile(path):
-            return "GitHub Copilot credentials not found at \(path). Log in via a Copilot IDE extension (e.g. VS Code, JetBrains)."
+            return "GitHub Copilot credentials not found at \(path). Sign in from AgentBar settings."
+        case .missingAppLogin:
+            return "No AgentBar GitHub Copilot browser login was found. Sign in from AgentBar settings."
         case .missingCredentials:
-            return "No valid OAuth token in ~/.config/github-copilot/apps.json. Re-log in via a Copilot IDE extension."
+            return "No valid GitHub Copilot OAuth token was found. Sign in from AgentBar settings."
         case .invalidResponse:
             return "The GitHub Copilot API returned an invalid response."
         case let .httpStatus(code, message):
@@ -216,9 +394,23 @@ struct GitHubCopilotCLICredentials: Sendable {
 
 private struct GitHubCopilotUserResponse: Decodable {
     let login: String?
+    let email: String?
+    let name: String?
     let copilotPlan: String?
     let quotaResetDateUtc: String?
     let quotaSnapshots: GitHubCopilotQuotaSnapshots?
+}
+
+private struct GitHubUserProfileResponse: Decodable {
+    let login: String?
+    let email: String?
+    let name: String?
+}
+
+private struct GitHubEmailResponse: Decodable {
+    let email: String?
+    let primary: Bool?
+    let verified: Bool?
 }
 
 private struct GitHubCopilotQuotaSnapshots: Decodable {
