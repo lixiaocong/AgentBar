@@ -30,7 +30,6 @@ final class AppModel {
     private static let legacyUserDefaultsMigrationKey = "didMigrateLegacyUserDefaultsFromComAgentbarApp"
 
     private let userDefaults: UserDefaults
-    private let autoRefreshEnabled: Bool
     private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
     private var refreshTask: Task<Void, Never>?
     private var hasStarted = false
@@ -131,7 +130,6 @@ final class AppModel {
         }
 
         self.userDefaults = userDefaults
-        self.autoRefreshEnabled = startImmediately
         self.providerAvailabilityOverride = providerAvailabilityResolver
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
         self.providerAvailability = .none
@@ -660,7 +658,7 @@ final class AppModel {
     private func startAutoRefresh() {
         refreshTask?.cancel()
 
-        guard autoRefreshEnabled else { return }
+        guard hasStarted else { return }
         let interval = refreshIntervalSeconds
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -770,7 +768,7 @@ final class AppModel {
         pruneMenuBarSelectedAccountIDs()
         refreshProviderAvailability()
 
-        guard autoRefreshEnabled else { return }
+        guard hasStarted else { return }
 
         if isRefreshing {
             needsRefreshAfterCurrentRun = true

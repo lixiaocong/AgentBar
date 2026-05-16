@@ -37,7 +37,7 @@ Tests/AgentBarTests/
 
 ## Providers
 
-All providers are fetched **concurrently** every 30 seconds. Each provider section appears independently in the menu-bar popover — if one fails, the others still display.
+All providers are fetched **concurrently** on the configured update interval, defaulting to 10 seconds. Each provider section appears independently in the menu-bar popover — if one fails, the others still display.
 
 ### Codex (`AgentProviderKind.codex`)
 
@@ -76,7 +76,7 @@ The `copilot_internal/user` endpoint returns `quota_snapshots.premium_interactio
 |---|---|
 | API endpoints | `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` (get project ID + tier) → `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota` (get per-model quota buckets) |
 | Auth headers | `Authorization: Bearer <access_token>` |
-| Token refresh | `POST https://oauth2.googleapis.com/token` with `refresh_token` + Gemini CLI client ID/secret |
+| Token refresh | `POST https://oauth2.googleapis.com/token` with `refresh_token` + Gemini CLI OAuth client metadata loaded at runtime |
 | Credentials source | AgentBar Google browser login stored in macOS Keychain |
 | Account label | Read from the Google OAuth userinfo response |
 | Displayed metrics | Per-model request quota (e.g. Gemini 2.5 Flash, Gemini 3 Flash Preview) |
@@ -85,11 +85,12 @@ The `copilot_internal/user` endpoint returns `quota_snapshots.premium_interactio
 
 The service:
 1. Loads AgentBar-stored `access_token`, `refresh_token`, and expiry from Keychain
-2. Refreshes the token via Google OAuth if expired
-3. Calls `loadCodeAssist` to get the project ID and user tier (Free, Legacy, Standard)
-4. Calls `retrieveUserQuota` to get per-model quota buckets
-5. Filters out unavailable models (those with `remainingFraction: 0` and epoch reset time)
-6. Builds one `AgentQuotaMetric` per available model
+2. Loads the Gemini OAuth client ID/secret from the installed Gemini CLI JavaScript bundle at runtime. Do not commit those values.
+3. Refreshes the token via Google OAuth if expired
+4. Calls `loadCodeAssist` to get the project ID and user tier (Free, Legacy, Standard)
+5. Calls `retrieveUserQuota` to get per-model quota buckets
+6. Filters out unavailable models (those with `remainingFraction: 0` and epoch reset time)
+7. Builds one `AgentQuotaMetric` per available model
 
 Supported tiers:
 
@@ -135,6 +136,32 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 - Claude: `~/.config/claude-code/auth.json` (read-only local Claude Code auth detection)
 
 AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, or Gemini by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
+
+---
+
+## Security rules
+
+Never commit secrets or user tokens. This includes OAuth client secrets, API keys, access tokens, refresh tokens, private keys, `.env` files, `auth.json`, local Keychain exports, and copied CLI credential JSON.
+
+Runtime credentials must stay in macOS Keychain or user-local config paths. Public constants such as OAuth client IDs may exist only when they are truly public and not paired with a client secret. Gemini OAuth client metadata is loaded from the installed Gemini CLI bundle at runtime; do not paste the client ID/secret into source, tests, docs, or fixtures.
+
+Before pushing, run:
+
+```bash
+swift test
+rg -n --hidden --pcre2 \
+  --glob '!/.git/**' --glob '!/.build/**' --glob '!/build/**' --glob '!/.xcodebuild/**' \
+  'GOCSPX-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|sk-[A-Za-z0-9_-]{20,}|(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |DSA |EC |OPENSSH |)?PRIVATE KEY-----|ya29\\.[A-Za-z0-9_-]{20,}' .
+```
+
+If a secret is committed by mistake, remove it, amend or rewrite the offending commit, then run:
+
+```bash
+git reflog expire --expire=now --expire-unreachable=now --all
+git gc --prune=now
+```
+
+Do not unblock GitHub push protection for a real secret. Rotate any secret that ever appeared in terminal output, logs, screenshots, or rejected push messages.
 
 ---
 
