@@ -184,7 +184,7 @@ public struct AgentWidgetStateStore {
     }
 
     private var sharedDefaults: UserDefaults? {
-        guard Bundle.main.bundleIdentifier != AgentBarWidgetConstants.appBundleIdentifier else {
+        guard !Self.isWidgetExtension else {
             return nil
         }
 
@@ -194,28 +194,25 @@ public struct AgentWidgetStateStore {
     private static func readSnapshotURLs(fileManager: FileManager) -> [URL] {
         var urls: [URL] = []
 
-        urls.append(contentsOf: writeSnapshotURLs(fileManager: fileManager))
+        urls.append(contentsOf: appGroupSnapshotURLs(fileManager: fileManager))
 
-        if let sharedContainerURL = fileManager.containerURL(
-            forSecurityApplicationGroupIdentifier: AgentBarWidgetConstants.appGroupIdentifier
-        ) {
-            urls.append(
-                sharedContainerURL
-                    .appending(path: "Library/Application Support", directoryHint: .isDirectory)
-                    .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
-                    .appending(path: AgentBarWidgetConstants.snapshotFilename)
-            )
-            urls.append(
-                sharedContainerURL.appending(path: AgentBarWidgetConstants.snapshotFilename)
-            )
+        guard !isWidgetExtension else {
+            return uniqueURLs(urls)
         }
 
-        var seen = Set<String>()
-        return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
+        urls.append(contentsOf: writeSnapshotURLs(fileManager: fileManager))
+
+        return uniqueURLs(urls)
     }
 
     private static func writeSnapshotURLs(fileManager: FileManager) -> [URL] {
         var urls: [URL] = []
+
+        urls.append(contentsOf: appGroupSnapshotURLs(fileManager: fileManager))
+
+        guard !isWidgetExtension else {
+            return uniqueURLs(urls)
+        }
 
         if let ownAppSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             urls.append(
@@ -227,8 +224,23 @@ public struct AgentWidgetStateStore {
 
         urls.append(legacySnapshotURL(fileManager: fileManager))
 
-        var seen = Set<String>()
-        return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
+        return uniqueURLs(urls)
+    }
+
+    private static func appGroupSnapshotURLs(fileManager: FileManager) -> [URL] {
+        guard let sharedContainerURL = fileManager.containerURL(
+            forSecurityApplicationGroupIdentifier: AgentBarWidgetConstants.appGroupIdentifier
+        ) else {
+            return []
+        }
+
+        return [
+            sharedContainerURL
+                .appending(path: "Library/Application Support", directoryHint: .isDirectory)
+                .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
+                .appending(path: AgentBarWidgetConstants.snapshotFilename),
+            sharedContainerURL.appending(path: AgentBarWidgetConstants.snapshotFilename)
+        ]
     }
 
     private static func legacySnapshotURL(fileManager: FileManager) -> URL {
@@ -236,6 +248,19 @@ public struct AgentWidgetStateStore {
             .appending(path: "Library/Application Support", directoryHint: .isDirectory)
             .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
             .appending(path: AgentBarWidgetConstants.snapshotFilename)
+    }
+
+    private static var isWidgetExtension: Bool {
+        let mainBundle = Bundle.main
+        return mainBundle.bundleIdentifier == AgentBarWidgetConstants.widgetBundleIdentifier
+            || mainBundle.bundlePath.hasSuffix(".appex")
+            || mainBundle.infoDictionary?["NSExtension"] != nil
+            || ProcessInfo.processInfo.processName == "AgentBarWidgetExtension"
+    }
+
+    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 }
 

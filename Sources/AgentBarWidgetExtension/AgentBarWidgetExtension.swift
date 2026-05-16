@@ -159,7 +159,7 @@ struct AgentBarDesktopWidget: Widget {
         }
         .configurationDisplayName("Agent Bar")
         .description("See one Codex, Copilot, Gemini, or Claude account on your desktop.")
-        .supportedFamilies([.systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
         .contentMarginsDisabled()
     }
 }
