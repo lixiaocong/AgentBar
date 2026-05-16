@@ -9,18 +9,98 @@ import AgentBarCore
 struct AgentBarWidgetEntry: TimelineEntry {
     let date: Date
     let state: AgentWidgetState
+    let selectedAgentID: String?
+}
+
+struct AgentWidgetSelection: AppEntity {
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Agent")
+    static let defaultQuery = AgentWidgetSelectionQuery()
+
+    let id: String
+    let title: String
+    let subtitle: String
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(
+            title: "\(title)",
+            subtitle: "\(subtitle)"
+        )
+    }
+}
+
+struct AgentWidgetSelectionQuery: EntityQuery {
+    func entities(for identifiers: [AgentWidgetSelection.ID]) async throws -> [AgentWidgetSelection] {
+        let selections = Self.availableSelections()
+        return identifiers.map { identifier in
+            selections.first { $0.id == identifier } ?? AgentWidgetSelection(
+                id: identifier,
+                title: "Unavailable Agent",
+                subtitle: identifier
+            )
+        }
+    }
+
+    func suggestedEntities() async throws -> [AgentWidgetSelection] {
+        Self.availableSelections()
+    }
+
+    func defaultResult() async -> AgentWidgetSelection? {
+        Self.availableSelections().first
+    }
+
+    private static func availableSelections() -> [AgentWidgetSelection] {
+        let state = AgentWidgetStateStore().loadIfPresent()
+        return (state?.sortedProviders ?? AgentWidgetState.preview.sortedProviders)
+            .map(selection)
+    }
+
+    private static func selection(for state: AgentWidgetProviderState) -> AgentWidgetSelection {
+        let accountLabel = state.snapshot?.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title: String
+        if let accountLabel, !accountLabel.isEmpty {
+            title = "\(state.provider.title): \(accountLabel)"
+        } else {
+            title = state.provider.title
+        }
+
+        let subtitle: String
+        if let metric = state.snapshot?.highlightMetric {
+            subtitle = "\(metric.percentText) remaining"
+        } else if state.snapshot != nil {
+            subtitle = "Ready"
+        } else if state.errorMessage != nil {
+            subtitle = "Error"
+        } else if state.isAvailable {
+            subtitle = "Refreshing"
+        } else {
+            subtitle = "No credentials"
+        }
+
+        return AgentWidgetSelection(id: state.id, title: title, subtitle: subtitle)
+    }
 }
 
 struct AgentBarWidgetConfigurationIntent: WidgetConfigurationIntent {
     static let title: LocalizedStringResource = "Agent Bar"
-    static let description = IntentDescription("Shows local agent quota usage on the desktop.")
+    static let description = IntentDescription("Shows one local agent quota account on the desktop.")
+
+    @Parameter(title: "Agent", description: "The AgentBar account to show in this widget.")
+    var agent: AgentWidgetSelection?
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Show \(\.$agent)")
+    }
 }
 
 struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
     typealias Intent = AgentBarWidgetConfigurationIntent
 
     func placeholder(in context: Context) -> AgentBarWidgetEntry {
-        AgentBarWidgetEntry(date: Date(), state: .preview)
+        AgentBarWidgetEntry(
+            date: Date(),
+            state: .preview,
+            selectedAgentID: AgentWidgetState.preview.sortedProviders.first?.id
+        )
     }
 
     func snapshot(
@@ -31,14 +111,14 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
             return placeholder(in: context)
         }
 
-        return await loadEntry()
+        return await loadEntry(for: configuration)
     }
 
     func timeline(
         for configuration: AgentBarWidgetConfigurationIntent,
         in context: Context
     ) async -> Timeline<AgentBarWidgetEntry> {
-        let entry = await loadEntry()
+        let entry = await loadEntry(for: configuration)
         let nextRefreshDate = entry.date.addingTimeInterval(
             AgentBarWidgetConstants.timelineRefreshInterval
         )
@@ -48,15 +128,23 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
         )
     }
 
-    private func loadEntry() async -> AgentBarWidgetEntry {
+    private func loadEntry(for configuration: AgentBarWidgetConfigurationIntent) async -> AgentBarWidgetEntry {
         let store = AgentWidgetStateStore()
         if let cached = store.loadIfPresent() {
-            return AgentBarWidgetEntry(date: Date(), state: cached)
+            return AgentBarWidgetEntry(
+                date: Date(),
+                state: cached,
+                selectedAgentID: configuration.agent?.id
+            )
         }
 
         // The widget extension is sandboxed. It should only render the shared cache
         // written by the main app, not probe provider config files directly.
-        return AgentBarWidgetEntry(date: Date(), state: .empty)
+        return AgentBarWidgetEntry(
+            date: Date(),
+            state: .empty,
+            selectedAgentID: configuration.agent?.id
+        )
     }
 }
 
@@ -70,8 +158,8 @@ struct AgentBarDesktopWidget: Widget {
             AgentBarDesktopWidgetView(entry: entry)
         }
         .configurationDisplayName("Agent Bar")
-        .description("See Codex, Copilot, Gemini, and Claude usage on your desktop.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .description("See one Codex, Copilot, Gemini, or Claude account on your desktop.")
+        .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }
 }
@@ -80,6 +168,16 @@ struct AgentBarDesktopWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     let entry: AgentBarWidgetEntry
+
+    private var selectedProvider: AgentWidgetProviderState? {
+        let providers = entry.state.sortedProviders
+        if let selectedAgentID = entry.selectedAgentID,
+           let selectedProvider = providers.first(where: { $0.id == selectedAgentID }) {
+            return selectedProvider
+        }
+
+        return providers.first
+    }
 
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: columnCount)
@@ -194,22 +292,13 @@ struct AgentBarDesktopWidgetView: View {
 
     @ViewBuilder
     private func widgetContent(for size: CGSize) -> some View {
-        if visibleProviders.isEmpty {
-            emptyState
+        if let selectedProvider {
+            providerCard(selectedProvider)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if entry.selectedAgentID != nil {
+            missingSelectionState
         } else {
-            switch family {
-            case .systemSmall:
-                if let providerState = visibleProviders.first {
-                    providerCard(providerState)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-            case .systemMedium:
-                mediumLayout(size: size)
-            case .systemLarge, .systemExtraLarge:
-                largeLayout(size: size)
-            @unknown default:
-                largeLayout(size: size)
-            }
+            emptyState
         }
     }
 
@@ -352,6 +441,28 @@ struct AgentBarDesktopWidgetView: View {
                 .font(.headline)
 
             Text("Open Agent Bar once, then the desktop widget will update from the shared cache.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(0.85))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+        }
+    }
+
+    private var missingSelectionState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Agent not found")
+                .font(.headline)
+
+            Text("Edit the widget and choose an AgentBar account that is still available.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

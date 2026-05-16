@@ -1126,7 +1126,7 @@ final class AppModel {
         AgentWidgetState(
             generatedAt: Date(),
             providers: AgentProviderKind.allCases.flatMap { provider in
-                visibleAccountStatuses(for: provider).map { status in
+                accountStatuses(for: provider).map { status in
                     AgentWidgetProviderState(
                         id: status.id,
                         provider: provider,
