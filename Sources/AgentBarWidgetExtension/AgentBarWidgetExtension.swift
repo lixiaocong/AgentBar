@@ -6,10 +6,71 @@ import WidgetKit
 import AgentBarCore
 #endif
 
+// MARK: - Per-Instance Selection Persistence
+
+/// Persists the selected agent ID to a file in the widget's sandbox.
+/// Written by the interactive SelectAgentBarAgentIntent, read by the timeline provider.
+private enum AgentWidgetSelectionStore {
+    private static let filename = "widget-selection.json"
+
+    struct Selection: Codable {
+        var selectedAgentID: String?
+    }
+
+    static func load() -> Selection {
+        let url = fileURL()
+        guard let data = try? Data(contentsOf: url),
+              let selection = try? JSONDecoder().decode(Selection.self, from: data) else {
+            return Selection(selectedAgentID: nil)
+        }
+        return selection
+    }
+
+    static func save(_ selection: Selection) {
+        let url = fileURL()
+        guard let data = try? JSONEncoder().encode(selection) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    static func fileURL() -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(filename)
+    }
+}
+
+// MARK: - Interactive Intent for Agent Selection
+
+/// Interactive intent triggered by tapping an agent tab in the widget.
+struct SelectAgentBarAgentIntent: AppIntent {
+    static let title: LocalizedStringResource = "Select Agent"
+    static let description = IntentDescription("Selects which agent to display in the widget.")
+
+    @Parameter(title: "Agent ID")
+    var agentID: String
+
+    init() {
+        self.agentID = ""
+    }
+
+    init(agentID: String) {
+        self.agentID = agentID
+    }
+
+    func perform() async throws -> some IntentResult {
+        var selection = AgentWidgetSelectionStore.load()
+        selection.selectedAgentID = agentID
+        AgentWidgetSelectionStore.save(selection)
+        return .result()
+    }
+}
+
+// MARK: - Widget Configuration (kept for Edit UI, even though persistence is broken)
+
 struct AgentBarWidgetEntry: TimelineEntry {
     let date: Date
     let state: AgentWidgetState
     let selectedAgentID: String?
+    let availableProviders: [AgentWidgetProviderState]
 }
 
 struct AgentWidgetSelection: AppEntity {
@@ -31,6 +92,14 @@ struct AgentWidgetSelection: AppEntity {
 struct AgentWidgetSelectionQuery: EntityQuery {
     func entities(for identifiers: [AgentWidgetSelection.ID]) async throws -> [AgentWidgetSelection] {
         let selections = Self.availableSelections()
+
+        // Persist selection when system resolves an entity (Edit Widget confirmation)
+        if let id = identifiers.first {
+            var stored = AgentWidgetSelectionStore.load()
+            stored.selectedAgentID = id
+            AgentWidgetSelectionStore.save(stored)
+        }
+
         return identifiers.map { identifier in
             selections.first { $0.id == identifier } ?? AgentWidgetSelection(
                 id: identifier,
@@ -45,7 +114,7 @@ struct AgentWidgetSelectionQuery: EntityQuery {
     }
 
     func defaultResult() async -> AgentWidgetSelection? {
-        Self.availableSelections().first
+        nil
     }
 
     private static func availableSelections() -> [AgentWidgetSelection] {
@@ -92,6 +161,8 @@ struct AgentBarWidgetConfigurationIntent: WidgetConfigurationIntent {
     }
 }
 
+// MARK: - Timeline Provider
+
 struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
     typealias Intent = AgentBarWidgetConfigurationIntent
 
@@ -99,7 +170,8 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
         AgentBarWidgetEntry(
             date: Date(),
             state: .preview,
-            selectedAgentID: AgentWidgetState.preview.sortedProviders.first?.id
+            selectedAgentID: AgentWidgetState.preview.sortedProviders.first?.id,
+            availableProviders: AgentWidgetState.preview.sortedProviders
         )
     }
 
@@ -111,14 +183,28 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
             return placeholder(in: context)
         }
 
-        return await loadEntry(for: configuration)
+        // Capture any non-nil intent selection
+        if let intentID = configuration.agent?.id {
+            var selection = AgentWidgetSelectionStore.load()
+            selection.selectedAgentID = intentID
+            AgentWidgetSelectionStore.save(selection)
+        }
+
+        return loadEntry(for: configuration)
     }
 
     func timeline(
         for configuration: AgentBarWidgetConfigurationIntent,
         in context: Context
     ) async -> Timeline<AgentBarWidgetEntry> {
-        let entry = await loadEntry(for: configuration)
+        // Persist intent selection if available
+        if let intentID = configuration.agent?.id {
+            var selection = AgentWidgetSelectionStore.load()
+            selection.selectedAgentID = intentID
+            AgentWidgetSelectionStore.save(selection)
+        }
+
+        let entry = loadEntry(for: configuration)
         let nextRefreshDate = entry.date.addingTimeInterval(
             AgentBarWidgetConstants.timelineRefreshInterval
         )
@@ -128,23 +214,38 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
         )
     }
 
-    private func loadEntry(for configuration: AgentBarWidgetConfigurationIntent) async -> AgentBarWidgetEntry {
+    private func loadEntry(for configuration: AgentBarWidgetConfigurationIntent) -> AgentBarWidgetEntry {
         let store = AgentWidgetStateStore()
-        if let cached = store.loadIfPresent() {
-            return AgentBarWidgetEntry(
-                date: Date(),
-                state: cached,
-                selectedAgentID: configuration.agent?.id
-            )
-        }
+        let cached = store.loadIfPresent()
+        let providers = cached?.sortedProviders ?? []
+        let selectedID = resolvedAgentID(from: configuration, state: cached)
 
-        // The widget extension is sandboxed. It should only render the shared cache
-        // written by the main app, not probe provider config files directly.
         return AgentBarWidgetEntry(
             date: Date(),
-            state: .empty,
-            selectedAgentID: configuration.agent?.id
+            state: cached ?? .empty,
+            selectedAgentID: selectedID,
+            availableProviders: providers
         )
+    }
+
+    /// Resolves the selected agent: intent → persisted file → first provider.
+    private func resolvedAgentID(from configuration: AgentBarWidgetConfigurationIntent, state: AgentWidgetState?) -> String? {
+        let providers = state?.sortedProviders ?? []
+
+        // Intent parameter (if system persistence ever works)
+        if let intentID = configuration.agent?.id,
+           providers.contains(where: { $0.id == intentID }) {
+            return intentID
+        }
+
+        // File-based fallback (written by interactive intent button)
+        if let fileID = AgentWidgetSelectionStore.load().selectedAgentID,
+           providers.contains(where: { $0.id == fileID }) {
+            return fileID
+        }
+
+        // Fall back to first provider
+        return providers.first?.id
     }
 }
 
@@ -159,13 +260,13 @@ struct AgentBarDesktopWidget: Widget {
         }
         .configurationDisplayName("Agent Bar")
         .description("See one Codex, Copilot, Gemini, or Claude account on your desktop.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }
 }
 
 struct AgentBarDesktopWidgetView: View {
-    @Environment(\.widgetFamily) private var family
+    @Environment(\.colorScheme) private var colorScheme
 
     let entry: AgentBarWidgetEntry
 
@@ -179,421 +280,168 @@ struct AgentBarDesktopWidgetView: View {
         return providers.first
     }
 
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: columnCount)
-    }
-
-    private var columnCount: Int {
-        switch family {
-        case .systemSmall:
-            1
-        case .systemMedium:
-            2
-        case .systemLarge, .systemExtraLarge:
-            2
-        @unknown default:
-            2
-        }
-    }
-
-    private var maxVisibleProviders: Int {
-        switch family {
-        case .systemSmall:
-            1
-        case .systemMedium:
-            2
-        case .systemLarge, .systemExtraLarge:
-            4
-        @unknown default:
-            4
-        }
-    }
-
-    private var visibleProviders: [AgentWidgetProviderState] {
-        Array(candidateProviders.prefix(maxVisibleProviders))
-    }
-
-    private var candidateProviders: [AgentWidgetProviderState] {
-        switch family {
-        case .systemSmall, .systemMedium:
-            return prioritizedProviders
-        case .systemLarge, .systemExtraLarge:
-            return entry.state.sortedProviders
-        @unknown default:
-            return entry.state.sortedProviders
-        }
-    }
-
-    private var prioritizedProviders: [AgentWidgetProviderState] {
-        entry.state.sortedProviders.sorted { lhs, rhs in
-            let leftPriority = providerPriority(lhs)
-            let rightPriority = providerPriority(rhs)
-
-            if leftPriority != rightPriority {
-                return leftPriority < rightPriority
-            }
-
-            if lhs.provider.sortOrder != rhs.provider.sortOrder {
-                return lhs.provider.sortOrder < rhs.provider.sortOrder
-            }
-
-            return lhs.id < rhs.id
-        }
-    }
-
-    private var gridSpacing: CGFloat {
-        switch family {
-        case .systemSmall:
-            0
-        case .systemMedium:
-            10
-        case .systemLarge, .systemExtraLarge:
-            12
-        @unknown default:
-            10
-        }
-    }
-
-    private var widgetPadding: CGFloat {
-        switch family {
-        case .systemSmall:
-            8
-        case .systemMedium:
-            10
-        case .systemLarge, .systemExtraLarge:
-            12
-        @unknown default:
-            10
-        }
-    }
-
     var body: some View {
-        GeometryReader { proxy in
-            let contentSize = CGSize(
-                width: max(0, proxy.size.width - (widgetPadding * 2)),
-                height: max(0, proxy.size.height - (widgetPadding * 2))
-            )
+        ZStack {
+            widgetBackground
 
-            widgetContent(for: contentSize)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(widgetPadding)
+            if let selectedProvider {
+                providerContent(selectedProvider)
+            } else if entry.selectedAgentID != nil {
+                emptyState(
+                    title: "Agent Not Found",
+                    message: "Edit the widget and choose an AgentBar account that is still available."
+                )
+            } else {
+                emptyState(
+                    title: "No Data Yet",
+                    message: "Open Agent Bar once so it can populate widget data."
+                )
+            }
         }
+        .foregroundStyle(palette.primaryText)
         .containerBackground(for: .widget) {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.97, green: 0.98, blue: 0.99),
-                    Color.white,
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            widgetBackground
         }
     }
 
     @ViewBuilder
-    private func widgetContent(for size: CGSize) -> some View {
-        if let selectedProvider {
-            providerCard(selectedProvider)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        } else if entry.selectedAgentID != nil {
-            missingSelectionState
-        } else {
-            emptyState
-        }
-    }
-
-    private func mediumLayout(size: CGSize) -> some View {
-        return HStack(alignment: .center, spacing: gridSpacing) {
-            ForEach(visibleProviders) { providerState in
-                providerCard(providerState)
-                    .aspectRatio(1, contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            if visibleProviders.count == 1 {
-                Spacer(minLength: 0)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-
-    private func largeLayout(size: CGSize) -> some View {
-        let firstRow = Array(visibleProviders.prefix(2))
-        let secondRow = Array(visibleProviders.dropFirst(2).prefix(2))
-
-        return VStack(alignment: .center, spacing: gridSpacing) {
-            cardRow(firstRow)
-
-            if !secondRow.isEmpty {
-                cardRow(secondRow)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-
-    private func cardRow(_ states: [AgentWidgetProviderState]) -> some View {
-        HStack(alignment: .center, spacing: gridSpacing) {
-            ForEach(states) { providerState in
-                providerCard(providerState)
-                    .aspectRatio(1, contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            if states.count == 1 {
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    private func providerCard(_ state: AgentWidgetProviderState) -> some View {
-        let palette = palette(for: state.provider)
+    private func providerContent(_ state: AgentWidgetProviderState) -> some View {
+        let providerPalette = tint(for: state.provider)
         let metrics = displayMetrics(for: state)
 
-        return VStack(alignment: .leading, spacing: cardSpacing) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(state.provider.menuBarTitlePrefix)
-                        .font(.caption.weight(.heavy))
-                        .foregroundStyle(palette.tint)
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            header(state)
 
+            if let error = state.errorMessage {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-
-                Text(primaryValue(for: state))
-                    .font(primaryValueFont)
-                    .foregroundStyle(primaryValueColor(for: state, palette: palette))
-                    .multilineTextAlignment(.trailing)
-                    .monospacedDigit()
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(1)
-                    .lineLimit(1)
-            }
-
-            if !metrics.isEmpty {
-                VStack(alignment: .leading, spacing: metrics.count > 2 ? 6 : 10) {
-                    ForEach(metrics.prefix(4)) { metric in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(alignment: .lastTextBaseline) {
-                                Text(metric.title)
-                                    .font(.system(size: metrics.count > 2 ? 9 : 11, weight: .semibold))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-
-                                Spacer(minLength: 4)
-
-                                Text(metric.remainingLabel)
-                                    .font(.system(size: metrics.count > 2 ? 8 : 10, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-
-                            ProgressView(value: metric.remainingPercent, total: 100)
-                                .tint(palette.tint)
-                        }
-                    }
+            } else if !metrics.isEmpty {
+                ForEach(metrics.prefix(3)) { metric in
+                    metricCard(metric, tint: providerPalette)
                 }
             } else if let snapshot = state.snapshot {
-                Text(snapshot.accountLabel)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(snapshot.planType ?? "Local auth detected")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            } else if let error = state.errorMessage {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(family == .systemMedium ? 2 : 3)
+                HStack(spacing: 8) {
+                    detailPill(label: "Plan", value: snapshot.planType ?? "Active")
+                    detailPill(label: "Updated", value: snapshot.updatedAt.formatted(date: .omitted, time: .shortened))
+                }
+                Spacer(minLength: 0)
             } else if state.isAvailable {
-                Text("Refreshing latest usage…")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Text("Refreshing…")
+                    .font(.caption)
+                    .foregroundStyle(palette.secondaryText)
+                Spacer(minLength: 0)
             } else {
                 Text("No local credentials found")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .font(.caption)
+                    .foregroundStyle(palette.secondaryText)
+                Spacer(minLength: 0)
+            }
+
+            // Agent picker tabs (interactive intent buttons)
+            if entry.availableProviders.count > 1 {
+                agentPickerBar(selectedID: state.id)
             }
         }
-        .padding(cardPadding)
-        .frame(
-            maxWidth: .infinity,
-            minHeight: minimumCardHeight,
-            maxHeight: maximumCardHeight,
-            alignment: .topLeading
-        )
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(palette.background)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(palette.stroke, lineWidth: 1)
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("No cached data yet")
-                .font(.headline)
-
-            Text("Open Agent Bar once, then the desktop widget will update from the shared cache.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.white.opacity(0.85))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
+    }
+
+    private func agentPickerBar(selectedID: String) -> some View {
+        HStack(spacing: 4) {
+            ForEach(entry.availableProviders) { provider in
+                Button(intent: SelectAgentBarAgentIntent(agentID: provider.id)) {
+                    Text(provider.provider.title)
+                        .font(.system(size: 9, weight: provider.id == selectedID ? .bold : .medium))
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(provider.id == selectedID
+                                      ? tint(for: provider.provider).opacity(0.2)
+                                      : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
         }
     }
 
-    private var missingSelectionState: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Agent not found")
-                .font(.headline)
+    private func header(_ state: AgentWidgetProviderState) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(state.provider.title)
+                .font(.system(.title3, design: .rounded).weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
 
-            Text("Edit the widget and choose an AgentBar account that is still available.")
+            if let accountLabel = state.snapshot?.accountLabel {
+                Text(accountLabel)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(palette.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+        }
+    }
+
+    private func metricCard(_ metric: AgentQuotaMetric, tint: Color) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(metric.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(palette.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                ProgressView(value: metric.remainingPercent, total: 100)
+                    .tint(tint)
+            }
+
+            Text(metric.remainingLabel)
+                .font(.system(.caption, design: .rounded).weight(.bold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tint.opacity(colorScheme == .dark ? 0.18 : 0.10))
+        )
+    }
+
+    private func detailPill(label: String, value: String) -> some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(palette.secondaryText)
+            Text(value)
+                .font(.system(.caption2, design: .monospaced))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(palette.pillBackground, in: Capsule())
+    }
+
+    private func emptyState(title: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(.headline, design: .rounded).weight(.semibold))
+
+            Text(message)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(palette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.white.opacity(0.85))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.black.opacity(0.06), lineWidth: 1)
-        }
-    }
-
-    private var cardPadding: CGFloat {
-        switch family {
-        case .systemSmall:
-            13
-        case .systemMedium:
-            14
-        case .systemLarge, .systemExtraLarge:
-            16
-        @unknown default:
-            12
-        }
-    }
-
-    private var cardSpacing: CGFloat {
-        switch family {
-        case .systemSmall:
-            7
-        case .systemMedium:
-            10
-        case .systemLarge, .systemExtraLarge:
-            12
-        @unknown default:
-            8
-        }
-    }
-
-    private var minimumCardHeight: CGFloat {
-        switch family {
-        case .systemSmall:
-            0
-        case .systemMedium:
-            118
-        case .systemLarge, .systemExtraLarge:
-            124
-        @unknown default:
-            118
-        }
-    }
-
-    private var maximumCardHeight: CGFloat? {
-        .infinity
-    }
-
-    private var primaryValueFont: Font {
-        switch family {
-        case .systemSmall:
-            .system(size: 22, weight: .bold, design: .rounded)
-        case .systemMedium:
-            .system(size: 18, weight: .bold, design: .rounded)
-        case .systemLarge, .systemExtraLarge:
-            .system(size: 22, weight: .bold, design: .rounded)
-        @unknown default:
-            .system(size: 16, weight: .bold, design: .rounded)
-        }
-    }
-
-    private var metricTitleFont: Font {
-        switch family {
-        case .systemSmall:
-            .caption.weight(.semibold)
-        case .systemMedium:
-            .footnote.weight(.semibold)
-        case .systemLarge, .systemExtraLarge:
-            .callout.weight(.semibold)
-        @unknown default:
-            .caption.weight(.semibold)
-        }
-    }
-
-    private func primaryValue(for state: AgentWidgetProviderState) -> String {
-        if let metric = primaryMetric(for: state) {
-            return metric.percentText
-        }
-
-        if state.snapshot != nil {
-            return "Ready"
-        }
-
-        if state.errorMessage != nil {
-            return "Error"
-        }
-
-        if state.isAvailable {
-            return "..."
-        }
-
-        return "--"
-    }
-
-    private func providerPriority(_ state: AgentWidgetProviderState) -> Double {
-        if let usedPercent = primaryMetric(for: state)?.usedPercent {
-            return -usedPercent
-        }
-
-        if state.snapshot != nil {
-            return 1_000
-        }
-
-        if state.errorMessage != nil {
-            return 2_000
-        }
-
-        return 3_000
-    }
-
-    private func primaryMetric(for state: AgentWidgetProviderState) -> AgentQuotaMetric? {
-        guard let snapshot = state.snapshot else {
-            return nil
-        }
-
-        if state.provider == .codex, let weeklyMetric = snapshot.metrics.first(where: isCodexWeeklyMetric) {
-            return weeklyMetric
-        }
-
-        return snapshot.highlightMetric
+        .padding(16)
     }
 
     private func displayMetrics(for state: AgentWidgetProviderState) -> [AgentQuotaMetric] {
@@ -620,62 +468,72 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func codexMetricDisplayPriority(_ metric: AgentQuotaMetric) -> Int {
-        if isCodexWeeklyMetric(metric) {
-            return 0
-        }
-
-        return 1
+        isCodexWeeklyMetric(metric) ? 0 : 1
     }
 
     private func isCodexWeeklyMetric(_ metric: AgentQuotaMetric) -> Bool {
         metric.id == "window-10080" || metric.title.localizedCaseInsensitiveContains("7 day")
     }
 
-    private func primaryValueColor(
-        for state: AgentWidgetProviderState,
-        palette: ProviderPalette
-    ) -> Color {
-        if state.errorMessage != nil {
-            return Color.red.opacity(0.85)
-        }
-
-        return palette.tint
-    }
-
-    private func palette(for provider: AgentProviderKind) -> ProviderPalette {
+    private func tint(for provider: AgentProviderKind) -> Color {
         switch provider {
         case .codex:
-            return ProviderPalette(
-                tint: Color(red: 0.11, green: 0.42, blue: 0.87),
-                background: Color(red: 0.92, green: 0.96, blue: 1.00),
-                stroke: Color(red: 0.77, green: 0.86, blue: 0.98)
-            )
+            Color(red: 0.11, green: 0.42, blue: 0.87)
         case .githubCopilot:
-            return ProviderPalette(
-                tint: Color(red: 0.08, green: 0.54, blue: 0.39),
-                background: Color(red: 0.92, green: 0.98, blue: 0.95),
-                stroke: Color(red: 0.77, green: 0.92, blue: 0.84)
-            )
+            Color(red: 0.08, green: 0.54, blue: 0.39)
         case .gemini:
-            return ProviderPalette(
-                tint: Color(red: 0.94, green: 0.52, blue: 0.10),
-                background: Color(red: 1.00, green: 0.96, blue: 0.90),
-                stroke: Color(red: 0.98, green: 0.87, blue: 0.72)
-            )
+            Color(red: 0.94, green: 0.52, blue: 0.10)
         case .claude:
-            return ProviderPalette(
-                tint: Color(red: 0.45, green: 0.33, blue: 0.26),
-                background: Color(red: 0.96, green: 0.94, blue: 0.92),
-                stroke: Color(red: 0.87, green: 0.82, blue: 0.77)
+            Color(red: 0.55, green: 0.35, blue: 0.24)
+        }
+    }
+
+    private var widgetBackground: some View {
+        ZStack {
+            LinearGradient(
+                colors: [palette.backgroundTop, palette.backgroundBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            LinearGradient(
+                colors: [
+                    Color.white.opacity(colorScheme == .dark ? 0.06 : 0.52),
+                    Color.white.opacity(0)
+                ],
+                startPoint: .top,
+                endPoint: .center
             )
         }
+    }
+
+    private var palette: WidgetPalette {
+        WidgetPalette(colorScheme: colorScheme)
     }
 }
 
-private struct ProviderPalette {
-    let tint: Color
-    let background: Color
-    let stroke: Color
+private struct WidgetPalette {
+    let backgroundTop: Color
+    let backgroundBottom: Color
+    let pillBackground: Color
+    let primaryText: Color
+    let secondaryText: Color
+
+    init(colorScheme: ColorScheme) {
+        if colorScheme == .dark {
+            backgroundTop = Color(red: 0.14, green: 0.16, blue: 0.22)
+            backgroundBottom = Color(red: 0.18, green: 0.21, blue: 0.28)
+            pillBackground = Color.white.opacity(0.12)
+            primaryText = Color.white.opacity(0.98)
+            secondaryText = Color.white.opacity(0.72)
+        } else {
+            backgroundTop = Color(red: 0.985, green: 0.988, blue: 0.995)
+            backgroundBottom = Color(red: 0.945, green: 0.956, blue: 0.976)
+            pillBackground = Color.white.opacity(0.92)
+            primaryText = Color(red: 0.10, green: 0.16, blue: 0.23)
+            secondaryText = Color(red: 0.31, green: 0.39, blue: 0.49)
+        }
+    }
 }
 
 private extension AgentWidgetState {

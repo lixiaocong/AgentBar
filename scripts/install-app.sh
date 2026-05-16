@@ -105,14 +105,16 @@ if [ -f "$ICON_FILE" ] && [ -d "$APP_BUNDLE/Contents/PlugIns" ]; then
     done < <(find "$APP_BUNDLE/Contents/PlugIns" -depth -name "*.appex" -print)
 fi
 
+SIGN_IDENTITY="${CODESIGN_IDENTITY:-WidgetDev}"
+
 if [ -d "$APP_BUNDLE/Contents/PlugIns" ]; then
     while IFS= read -r appex; do
-        codesign --force --sign - --entitlements "$WIDGET_ENTITLEMENTS" "$appex"
+        codesign --force --sign "$SIGN_IDENTITY" --entitlements "$WIDGET_ENTITLEMENTS" "$appex"
     done < <(find "$APP_BUNDLE/Contents/PlugIns" -depth -name "*.appex" -print)
 fi
 
-echo "==> Ad-hoc signing app bundle"
-codesign --force --sign - --entitlements "$APP_ENTITLEMENTS" "$APP_BUNDLE"
+echo "==> Signing app bundle with '$SIGN_IDENTITY'"
+codesign --force --sign "$SIGN_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$APP_BUNDLE"
 
 touch "$APP_BUNDLE"
 
