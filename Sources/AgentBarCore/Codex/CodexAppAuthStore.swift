@@ -1,11 +1,12 @@
 import CryptoKit
 import Foundation
+import LocalAuthentication
 import Security
 
 public enum CodexOAuthConfiguration {
     public static let issuer = URL(string: "https://auth.openai.com")!
     public static let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-    public static let originator = "codex_cli_rs"
+    public static let originator = "agentbar"
     public static let scopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
     public static var authorizationURL: URL {
@@ -61,7 +62,7 @@ public struct CodexTokenIdentity: Equatable, Sendable {
 }
 
 public enum CodexAppAuthStore {
-    public static let keychainService = "AgentBar Codex Auth"
+    public static let keychainService = "AgentBar Codex Browser Auth"
 
     private static let accountsDirectoryName = "CodexAccounts"
     private static let accountDirectoryPrefix = "account-"
@@ -340,12 +341,16 @@ public enum CodexAppAuthStoreError: LocalizedError {
 
 private enum KeychainCodexAuthStore {
     static func read(service: String, account: String) throws -> String? {
+        let authenticationContext = LAContext()
+        authenticationContext.interactionNotAllowed = true
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: authenticationContext
         ]
 
         var item: CFTypeRef?

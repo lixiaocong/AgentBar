@@ -112,7 +112,7 @@ public struct AgentWidgetStateStore {
             }
         }
 
-        for fileURL in Self.candidateSnapshotURLs(fileManager: fileManager)
+        for fileURL in Self.readSnapshotURLs(fileManager: fileManager)
         where fileManager.fileExists(atPath: fileURL.path) {
             do {
                 let data = try Data(contentsOf: fileURL)
@@ -144,7 +144,7 @@ public struct AgentWidgetStateStore {
             savedAtLeastOnce = true
         }
 
-        for fileURL in Self.candidateSnapshotURLs(fileManager: fileManager) {
+        for fileURL in Self.writeSnapshotURLs(fileManager: fileManager) {
             do {
                 let directory = fileURL.deletingLastPathComponent()
                 try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -184,19 +184,17 @@ public struct AgentWidgetStateStore {
     }
 
     private var sharedDefaults: UserDefaults? {
-        UserDefaults(suiteName: AgentBarWidgetConstants.appGroupIdentifier)
+        guard Bundle.main.bundleIdentifier != AgentBarWidgetConstants.appBundleIdentifier else {
+            return nil
+        }
+
+        return UserDefaults(suiteName: AgentBarWidgetConstants.appGroupIdentifier)
     }
 
-    private static func candidateSnapshotURLs(fileManager: FileManager) -> [URL] {
+    private static func readSnapshotURLs(fileManager: FileManager) -> [URL] {
         var urls: [URL] = []
 
-        if let ownAppSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            urls.append(
-                ownAppSupportURL
-                    .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
-                    .appending(path: AgentBarWidgetConstants.snapshotFilename)
-            )
-        }
+        urls.append(contentsOf: writeSnapshotURLs(fileManager: fileManager))
 
         if let sharedContainerURL = fileManager.containerURL(
             forSecurityApplicationGroupIdentifier: AgentBarWidgetConstants.appGroupIdentifier
@@ -209,6 +207,21 @@ public struct AgentWidgetStateStore {
             )
             urls.append(
                 sharedContainerURL.appending(path: AgentBarWidgetConstants.snapshotFilename)
+            )
+        }
+
+        var seen = Set<String>()
+        return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    private static func writeSnapshotURLs(fileManager: FileManager) -> [URL] {
+        var urls: [URL] = []
+
+        if let ownAppSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            urls.append(
+                ownAppSupportURL
+                    .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
+                    .appending(path: AgentBarWidgetConstants.snapshotFilename)
             )
         }
 

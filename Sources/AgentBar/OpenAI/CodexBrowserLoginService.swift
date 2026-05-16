@@ -145,9 +145,9 @@ enum CodexBrowserLoginMode: Equatable, Sendable {
     var additionalAuthorizeQueryItems: [URLQueryItem] {
         switch self {
         case .browserSession:
-            return []
+            return [URLQueryItem(name: "prompt", value: "consent")]
         case .forceAccountSelection:
-            return [URLQueryItem(name: "prompt", value: "login")]
+            return [URLQueryItem(name: "prompt", value: "login consent")]
         }
     }
 }

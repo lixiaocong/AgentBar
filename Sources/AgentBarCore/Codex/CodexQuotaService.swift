@@ -141,19 +141,8 @@ public struct CodexQuotaService: Sendable {
                 throw CodexQuotaError.missingAccessToken
             }
 
-            let accountLabel = preferredAccountLabel(
-                idToken: session.idToken,
-                fallbackAccountID: session.accountID
-            )
             logDebug("[Codex] AgentBar credentials loaded for account \(masked(session.accountID))")
-            return CodexAuthCredentials(
-                accessToken: accessToken,
-                refreshToken: session.refreshToken,
-                idToken: session.idToken,
-                accountID: session.accountID,
-                accountLabel: accountLabel,
-                appManagedAccountID: accountID
-            )
+            return appManagedCredentials(from: session, storageAccountID: accountID)
         }
 
         let rootDirectory = installation.rootDirectory
@@ -241,6 +230,11 @@ public struct CodexQuotaService: Sendable {
             return credentials
         }
 
+        let credentials = try latestAppManagedCredentialsIfAvailable(
+            storageAccountID: appManagedAccountID,
+            fallback: credentials
+        )
+
         guard force || shouldRefresh(accessToken: credentials.accessToken) else {
             return credentials
         }
@@ -250,7 +244,25 @@ public struct CodexQuotaService: Sendable {
             return credentials
         }
 
-        let response = try await requestTokenRefresh(refreshToken: refreshToken)
+        let response: CodexRefreshResponse
+        do {
+            response = try await requestTokenRefresh(refreshToken: refreshToken)
+        } catch let error as CodexQuotaError where error.isRefreshTokenReuse {
+            let latestCredentials = try latestAppManagedCredentialsIfAvailable(
+                storageAccountID: appManagedAccountID,
+                fallback: credentials
+            )
+
+            if latestCredentials.accessToken != credentials.accessToken ||
+                latestCredentials.refreshToken != credentials.refreshToken {
+                logInfo("[Codex] Recovered from reused refresh token using newer AgentBar credentials")
+                return try await refreshAppManagedCredentialsIfNeeded(latestCredentials, force: force)
+            }
+
+            logInfo("[Codex] Refresh token was already used; trying the existing access token before requiring sign-in")
+            return credentials
+        }
+
         let updatedIDToken = response.idToken ?? credentials.idToken ?? ""
         let updatedAccessToken = response.accessToken ?? credentials.accessToken
         let updatedRefreshToken = response.refreshToken ?? refreshToken
@@ -293,6 +305,41 @@ public struct CodexQuotaService: Sendable {
         }
 
         return expiresAt <= Date().addingTimeInterval(60)
+    }
+
+    private func latestAppManagedCredentialsIfAvailable(
+        storageAccountID: String,
+        fallback: CodexAuthCredentials
+    ) throws -> CodexAuthCredentials {
+        guard let session = try CodexAppAuthStore.loadSession(accountID: storageAccountID) else {
+            return fallback
+        }
+
+        let accessToken = session.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !accessToken.isEmpty else {
+            return fallback
+        }
+
+        return appManagedCredentials(from: session, storageAccountID: storageAccountID)
+    }
+
+    private func appManagedCredentials(
+        from session: CodexStoredAuthSession,
+        storageAccountID: String
+    ) -> CodexAuthCredentials {
+        let accountLabel = preferredAccountLabel(
+            idToken: session.idToken,
+            fallbackAccountID: session.accountID
+        )
+
+        return CodexAuthCredentials(
+            accessToken: session.accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
+            refreshToken: session.refreshToken,
+            idToken: session.idToken,
+            accountID: session.accountID,
+            accountLabel: accountLabel,
+            appManagedAccountID: storageAccountID
+        )
     }
 
     private func jwtExpirationDate(_ jwt: String) -> Date? {
@@ -456,5 +503,14 @@ private extension CodexQuotaError {
         }
 
         return code == 401 || code == 403
+    }
+
+    var isRefreshTokenReuse: Bool {
+        guard case let .refreshFailed(message) = self else {
+            return false
+        }
+
+        return message.contains("refresh_token_reused") ||
+            message.localizedCaseInsensitiveContains("refresh token has already been used")
     }
 }

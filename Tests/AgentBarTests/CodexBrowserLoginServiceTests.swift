@@ -16,12 +16,12 @@ func codexLoginCanForceAccountSelection() throws {
     let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
     let queryItems = components.queryItems ?? []
 
-    #expect(queryItems.first { $0.name == "prompt" }?.value == "login")
+    #expect(queryItems.first { $0.name == "prompt" }?.value == "login consent")
 }
 
 @Test
 @MainActor
-func codexLoginDefaultsToCurrentBrowserSession() throws {
+func codexLoginDefaultsToCurrentBrowserSessionWithFreshConsent() throws {
     let url = try CodexBrowserLoginService().buildAuthorizeURL(
         redirectURI: "http://localhost:1455/auth/callback",
         codeChallenge: "challenge",
@@ -31,7 +31,8 @@ func codexLoginDefaultsToCurrentBrowserSession() throws {
     let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
     let queryItems = components.queryItems ?? []
 
-    #expect(queryItems.first { $0.name == "prompt" } == nil)
+    #expect(queryItems.first { $0.name == "prompt" }?.value == "consent")
+    #expect(queryItems.first { $0.name == "originator" }?.value == "agentbar")
 }
 
 @Test
