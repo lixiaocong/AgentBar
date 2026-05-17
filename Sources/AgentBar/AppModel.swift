@@ -26,6 +26,7 @@ final class AppModel {
     private static let menuBarSelectedAccountIDsDefaultsKey = "menuBarSelectedAccountIDs"
     private static let refreshIntervalDefaultsKey = "refreshIntervalSeconds"
     private static let configuredAccountDirectoriesDefaultsKeyPrefix = "configuredAccountDirectories."
+    private static let accountLabelsDefaultsKey = "configuredAccountLabels"
     private let userDefaults: UserDefaults
     private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
     private var refreshTask: Task<Void, Never>?
@@ -34,7 +35,11 @@ final class AppModel {
     private var configuredDirectoriesByProvider: [AgentProviderKind: [ConfiguredAccountDirectory]]
     private var accountSnapshotsByID: [String: AgentQuotaSnapshot] = [:]
     private var accountErrorsByID: [String: String] = [:]
+    private var accountLabelsByID: [String: String]
     private var isMenuBarAccountSelectionExplicit = false
+    private var codexReconnectInProgressAccountIDs: Set<String> = []
+    private var codexAutoReconnectAttemptedAccountIDs: Set<String> = []
+    private var codexRevokedAccountIDs: Set<String> = []
 
     var providerAvailability: AgentProviderAvailability
     var isRefreshing = false
@@ -124,6 +129,7 @@ final class AppModel {
         self.userDefaults = userDefaults
         self.providerAvailabilityOverride = providerAvailabilityResolver
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
+        self.accountLabelsByID = userDefaults.dictionary(forKey: Self.accountLabelsDefaultsKey) as? [String: String] ?? [:]
         self.providerAvailability = .none
         menuBarMaxDisplayedAccounts = Self.normalizedMenuBarMaxDisplayedAccounts(
             userDefaults.object(forKey: Self.menuBarMaxDisplayedAccountsDefaultsKey) as? Int
@@ -275,6 +281,14 @@ final class AppModel {
         menuBarSelectedAccountIDs = Self.uniqueMenuBarAccountIDs(selectedIDs)
     }
 
+    func isCodexReconnectInProgress(_ account: ConfiguredAgentAccount) -> Bool {
+        codexReconnectInProgressAccountIDs.contains(account.id)
+    }
+
+    func reconnectCodexAccount(_ account: ConfiguredAgentAccount) {
+        startCodexReconnect(for: account, automatic: false)
+    }
+
     func resetMenuBarAccountSelection() {
         isMenuBarAccountSelectionExplicit = false
         menuBarSelectedAccountIDs = []
@@ -362,6 +376,9 @@ final class AppModel {
 
         let updated = configuredAccounts(for: account.provider).filter { $0 != account.directory }
         clearStoredAccountState(for: [account.id])
+        codexReconnectInProgressAccountIDs.remove(account.id)
+        codexAutoReconnectAttemptedAccountIDs.remove(account.id)
+        codexRevokedAccountIDs.remove(account.id)
         updateConfiguredAccounts(updated, for: account.provider)
     }
 
@@ -377,7 +394,7 @@ final class AppModel {
 
         refreshProviderAvailability()
         isRefreshing = true
-        let availableAccounts = availableConfiguredAccounts()
+        let refreshableAccounts = availableConfiguredAccounts().filter(shouldRefreshAccount)
         let visibleProviderTitles = availableProviders.map(\.menuBarTitlePrefix)
 
         Task {
@@ -390,14 +407,14 @@ final class AppModel {
                 }
             }
 
-            guard !availableAccounts.isEmpty else {
-                logInfo("No supported providers detected locally.")
+            guard !refreshableAccounts.isEmpty else {
+                logInfo("No accounts need refresh right now.")
                 return
             }
 
             logInfo("Refreshing detected providers: \(visibleProviderTitles.joined(separator: ", "))")
 
-            let results = await Self.loadAccounts(availableAccounts)
+            let results = await Self.loadAccounts(refreshableAccounts)
             apply(results: results)
         }
     }
@@ -474,6 +491,11 @@ final class AppModel {
                     accountID: session.accountID
                 )
                 let addResult = addConfiguredAccountDirectory(path: directoryURL.path, for: provider)
+                let account = ConfiguredAgentAccount(
+                    provider: provider,
+                    directory: ConfiguredAccountDirectory(path: directoryURL.path)
+                )
+                persistStoredAccountLabelIfNeeded(for: account, accountLabel: session.accountLabel)
 
                 switch addResult {
                 case .added:
@@ -526,6 +548,19 @@ final class AppModel {
                 try CodexAppAuthStore.ensureAccountDirectoryExists(for: localAccountID)
                 let directoryURL = CodexAppAuthStore.accountDirectory(for: localAccountID)
                 let addResult = addConfiguredAccountDirectory(path: directoryURL.path, for: .codex)
+                let account = ConfiguredAgentAccount(
+                    provider: .codex,
+                    directory: ConfiguredAccountDirectory(path: directoryURL.path)
+                )
+                codexRevokedAccountIDs.remove(account.id)
+                codexAutoReconnectAttemptedAccountIDs.remove(account.id)
+                persistStoredAccountLabelIfNeeded(
+                    for: account,
+                    accountLabel: CodexQuotaService().preferredAccountLabel(
+                        idToken: session.idToken,
+                        fallbackAccountID: session.accountID
+                    )
+                )
 
                 switch addResult {
                 case .added:
@@ -577,35 +612,15 @@ final class AppModel {
     private func accountStatus(for account: ConfiguredAgentAccount) -> AgentAccountStatus {
         AgentAccountStatus(
             account: account,
-            accountLabel: storedAccountLabel(for: account),
+            accountLabel: cachedAccountLabel(for: account),
             snapshot: accountSnapshotsByID[account.id],
             errorMessage: accountErrorsByID[account.id],
             credentialsDetected: isConfiguredAccountAvailable(account)
         )
     }
 
-    private func storedAccountLabel(for account: ConfiguredAgentAccount) -> String? {
-        if account.provider == .codex,
-           let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url),
-           let session = try? CodexAppAuthStore.loadSession(accountID: accountID) {
-            return CodexQuotaService().preferredAccountLabel(
-                idToken: session.idToken,
-                fallbackAccountID: session.accountID
-            )
-        }
-
-        guard let accountID = AgentProviderAppAuthStore.accountID(
-            fromAccountDirectory: account.directory.url,
-            provider: account.provider
-        ),
-              let session = try? AgentProviderAppAuthStore.loadSession(
-                provider: account.provider,
-                accountID: accountID
-              ) else {
-            return nil
-        }
-
-        return session.accountLabel
+    private func cachedAccountLabel(for account: ConfiguredAgentAccount) -> String? {
+        accountLabelsByID[account.id]
     }
 
     private func configuredCodexLocalAccountIDs() -> [String] {
@@ -724,6 +739,12 @@ final class AppModel {
         allConfiguredAccounts().filter(isConfiguredAccountAvailable)
     }
 
+    private func shouldRefreshAccount(_ account: ConfiguredAgentAccount) -> Bool {
+        guard account.provider == .codex else { return true }
+        return !codexRevokedAccountIDs.contains(account.id) &&
+            !codexReconnectInProgressAccountIDs.contains(account.id)
+    }
+
     private func isConfiguredAccountAvailable(_ account: ConfiguredAgentAccount) -> Bool {
         AgentAccountSnapshotLoader.isAvailable(account)
     }
@@ -733,6 +754,11 @@ final class AppModel {
         let validIDs = Set(accounts.map(\.id))
         accountSnapshotsByID = accountSnapshotsByID.filter { validIDs.contains($0.key) }
         accountErrorsByID = accountErrorsByID.filter { validIDs.contains($0.key) }
+        let labelsBeforePrune = accountLabelsByID
+        accountLabelsByID = accountLabelsByID.filter { validIDs.contains($0.key) }
+        if labelsBeforePrune != accountLabelsByID {
+            persistCachedAccountLabels()
+        }
 
         let unavailableIDs = Set(
             accounts
@@ -744,10 +770,22 @@ final class AppModel {
     }
 
     private func clearStoredAccountState(for accountIDs: some Sequence<String>) {
+        var didClearLabel = false
         for accountID in accountIDs {
             accountSnapshotsByID.removeValue(forKey: accountID)
             accountErrorsByID.removeValue(forKey: accountID)
+            if accountLabelsByID.removeValue(forKey: accountID) != nil {
+                didClearLabel = true
+            }
         }
+
+        if didClearLabel {
+            persistCachedAccountLabels()
+        }
+    }
+
+    private func persistCachedAccountLabels() {
+        userDefaults.set(accountLabelsByID, forKey: Self.accountLabelsDefaultsKey)
     }
 
     private func updateConfiguredAccounts(
@@ -806,6 +844,10 @@ final class AppModel {
         for result in results where configuredIDs.contains(result.account.id) {
             switch result.result {
             case .success(let snapshot):
+                if result.account.provider == .codex {
+                    codexRevokedAccountIDs.remove(result.account.id)
+                    codexAutoReconnectAttemptedAccountIDs.remove(result.account.id)
+                }
                 setAccountState(snapshot: snapshot, error: nil, for: result.account)
                 persistStoredAccountLabelIfNeeded(for: result.account, accountLabel: snapshot.accountLabel)
                 if let metric = snapshot.highlightMetric {
@@ -815,7 +857,18 @@ final class AppModel {
                 }
             case .failure(let error):
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                setAccountState(snapshot: nil, error: message, for: result.account)
+                if result.account.provider == .codex,
+                   isRecoverableCodexRevocation(error) {
+                    codexRevokedAccountIDs.insert(result.account.id)
+                    setAccountState(
+                        snapshot: nil,
+                        error: "Codex login was revoked. AgentBar is opening browser sign-in to reconnect this account.",
+                        for: result.account
+                    )
+                    startCodexReconnect(for: result.account, automatic: true)
+                } else {
+                    setAccountState(snapshot: nil, error: message, for: result.account)
+                }
                 logError("[AppModel] \(result.account.provider.title) refresh failed for \(result.account.displayPath): \(message)")
             }
         }
@@ -823,40 +876,132 @@ final class AppModel {
         refreshProviderAvailability()
     }
 
+    private func isRecoverableCodexRevocation(_ error: Error) -> Bool {
+        if let codexError = error as? CodexQuotaError,
+           case .tokenRevoked = codexError {
+            return true
+        }
+
+        let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        return message.localizedCaseInsensitiveContains("token_revoked") ||
+            message.localizedCaseInsensitiveContains("token_invalidated") ||
+            message.localizedCaseInsensitiveContains("invalidated oauth token")
+    }
+
+    private func startCodexReconnect(for account: ConfiguredAgentAccount, automatic: Bool) {
+        guard account.provider == .codex else { return }
+        guard !codexReconnectInProgressAccountIDs.contains(account.id) else { return }
+        if automatic {
+            guard !codexAutoReconnectAttemptedAccountIDs.contains(account.id) else { return }
+            codexAutoReconnectAttemptedAccountIDs.insert(account.id)
+        }
+
+        guard let localAccountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url) else {
+            return
+        }
+
+        let existingSession = try? CodexAppAuthStore.loadSession(accountID: localAccountID)
+        codexReconnectInProgressAccountIDs.insert(account.id)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                codexReconnectInProgressAccountIDs.remove(account.id)
+            }
+
+            do {
+                let authSession = try await CodexBrowserLoginService().signIn()
+                try validateCodexReconnect(
+                    existingSession: existingSession,
+                    newSession: authSession
+                )
+
+                let session = CodexStoredAuthSession(
+                    idToken: authSession.idToken,
+                    accessToken: authSession.accessToken,
+                    refreshToken: authSession.refreshToken,
+                    accountID: authSession.accountID,
+                    localAccountID: localAccountID,
+                    lastRefresh: authSession.lastRefresh
+                )
+                try CodexAppAuthStore.save(session: session)
+                try CodexAppAuthStore.ensureAccountDirectoryExists(for: localAccountID)
+                codexRevokedAccountIDs.remove(account.id)
+                codexAutoReconnectAttemptedAccountIDs.remove(account.id)
+                persistStoredAccountLabelIfNeeded(
+                    for: account,
+                    accountLabel: CodexQuotaService().preferredAccountLabel(
+                        idToken: session.idToken,
+                        fallbackAccountID: session.accountID
+                    )
+                )
+
+                setAccountState(
+                    snapshot: nil,
+                    error: nil,
+                    for: account
+                )
+                refreshProviderAvailability()
+                refreshNow()
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                setAccountState(
+                    snapshot: nil,
+                    error: "Codex reconnect failed: \(message)",
+                    for: account
+                )
+            }
+        }
+    }
+
+    private func validateCodexReconnect(
+        existingSession: CodexStoredAuthSession?,
+        newSession: CodexStoredAuthSession
+    ) throws {
+        guard let existingSession else { return }
+
+        guard existingSession.accountID == newSession.accountID else {
+            throw CodexReconnectError.accountMismatch
+        }
+
+        let existingIdentity = CodexAppAuthStore.identity(from: existingSession.idToken)
+        let newIdentity = CodexAppAuthStore.identity(from: newSession.idToken)
+        let existingSpace = normalizedCodexSpaceIdentity(existingIdentity)
+        let newSpace = normalizedCodexSpaceIdentity(newIdentity)
+        if existingSpace != nil || newSpace != nil {
+            guard existingSpace == newSpace else {
+                throw CodexReconnectError.workspaceMismatch
+            }
+        }
+    }
+
+    private func normalizedCodexSpaceIdentity(_ identity: CodexTokenIdentity?) -> String? {
+        if let spaceID = identity?.spaceID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !spaceID.isEmpty {
+            return "id:\(spaceID.lowercased())"
+        }
+
+        if let spaceName = identity?.spaceName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !spaceName.isEmpty {
+            return "name:\(spaceName.lowercased())"
+        }
+
+        return nil
+    }
+
     private func persistStoredAccountLabelIfNeeded(
         for account: ConfiguredAgentAccount,
         accountLabel: String
     ) {
-        guard account.provider != .codex,
-              account.provider != .claude,
-              let accountID = AgentProviderAppAuthStore.accountID(
-                fromAccountDirectory: account.directory.url,
-                provider: account.provider
-              ),
-              let session = try? AgentProviderAppAuthStore.loadSession(
-                provider: account.provider,
-                accountID: accountID
-              ),
-              session.accountLabel != accountLabel else {
+        let label = accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty,
+              accountLabelsByID[account.id] != label else {
             return
         }
 
-        let updatedSession = AgentProviderStoredAuthSession(
-            provider: session.provider,
-            accountID: session.accountID,
-            accountLabel: accountLabel,
-            accessToken: session.accessToken,
-            refreshToken: session.refreshToken,
-            expiryDate: session.expiryDate,
-            scopes: session.scopes,
-            lastRefresh: session.lastRefresh
-        )
-
-        do {
-            try AgentProviderAppAuthStore.save(session: updatedSession)
-        } catch {
-            logError("[AppModel] Could not persist \(account.provider.title) account label: \(error)")
-        }
+        accountLabelsByID[account.id] = label
+        persistCachedAccountLabels()
+        persistWidgetState()
     }
 
     private static func loadAccounts(
@@ -1117,5 +1262,19 @@ final class AppModel {
     private struct AccountRefreshResult {
         let account: ConfiguredAgentAccount
         let result: Result<AgentQuotaSnapshot, Error>
+    }
+}
+
+private enum CodexReconnectError: LocalizedError {
+    case accountMismatch
+    case workspaceMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .accountMismatch:
+            return "The browser returned a different Codex account. Choose the same account and try again."
+        case .workspaceMismatch:
+            return "The browser returned a different Codex workspace. Choose the same workspace and try again."
+        }
     }
 }

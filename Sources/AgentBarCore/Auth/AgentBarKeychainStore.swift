@@ -6,13 +6,18 @@ enum AgentBarKeychainStore {
     private static let sharedAccount = "browser-login-sessions"
 
     private static let lock = NSLock()
+    nonisolated(unsafe) private static var testVault = Vault()
 
     static func read(
         logicalService: String,
         account: String
     ) throws -> String? {
         try locked {
-            try readVault().entries[logicalService]?[account]
+            if usesInMemoryStoreForTests {
+                return testVault.entries[logicalService]?[account]
+            }
+
+            return try readVault().entries[logicalService]?[account]
         }
     }
 
@@ -22,6 +27,11 @@ enum AgentBarKeychainStore {
         account: String
     ) throws {
         try locked {
+            if usesInMemoryStoreForTests {
+                testVault.entries[logicalService, default: [:]][account] = value
+                return
+            }
+
             var vault = try readVault()
             vault.entries[logicalService, default: [:]][account] = value
             try writeVault(vault)
@@ -34,6 +44,20 @@ enum AgentBarKeychainStore {
         account: String
     ) throws -> Bool {
         try locked {
+            if usesInMemoryStoreForTests {
+                guard var serviceEntries = testVault.entries[logicalService],
+                      serviceEntries.removeValue(forKey: account) != nil else {
+                    return false
+                }
+
+                if serviceEntries.isEmpty {
+                    testVault.entries[logicalService] = nil
+                } else {
+                    testVault.entries[logicalService] = serviceEntries
+                }
+                return true
+            }
+
             var vault = try readVault()
             guard var serviceEntries = vault.entries[logicalService],
                   serviceEntries.removeValue(forKey: account) != nil else {
@@ -47,6 +71,17 @@ enum AgentBarKeychainStore {
             }
             try writeVault(vault)
             return true
+        }
+    }
+
+    private static var usesInMemoryStoreForTests: Bool {
+        let processInfo = ProcessInfo.processInfo
+        if processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return true
+        }
+
+        return processInfo.arguments.contains { argument in
+            argument.contains("AgentBarPackageTests.xctest")
         }
     }
 

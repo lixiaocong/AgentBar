@@ -91,7 +91,7 @@ public struct GeminiQuotaService: Sendable {
 
     public var isAvailable: Bool {
         if let accountID = installation.appManagedAccountID {
-            return AgentProviderAppAuthStore.hasSession(provider: .gemini, accountID: accountID)
+            return !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         return false

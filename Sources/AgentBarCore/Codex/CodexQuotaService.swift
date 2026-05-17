@@ -72,7 +72,7 @@ public struct CodexQuotaService: Sendable {
 
     public var isAvailable: Bool {
         if let accountID = installation.appManagedAccountID {
-            return CodexAppAuthStore.hasSession(accountID: accountID)
+            return !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         return false
@@ -118,6 +118,9 @@ public struct CodexQuotaService: Sendable {
         guard (200 ... 299).contains(httpResponse.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? "Request failed."
             logError("Codex API error \(httpResponse.statusCode): \(body)", log: networkLog)
+            if Self.isTokenRevokedResponse(body) {
+                throw CodexQuotaError.tokenRevoked("The Codex OAuth token was revoked by another OpenAI app session.")
+            }
             throw CodexQuotaError.httpStatus(httpResponse.statusCode, message: body)
         }
 
@@ -500,10 +503,20 @@ public struct CodexQuotaService: Sendable {
 
         guard (200 ... 299).contains(httpResponse.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? "Request failed."
+            if Self.isTokenRevokedResponse(body) {
+                throw CodexQuotaError.tokenRevoked("The Codex OAuth token was revoked by another OpenAI app session.")
+            }
             throw CodexQuotaError.refreshFailed("HTTP \(httpResponse.statusCode): \(body)")
         }
 
         return try JSONDecoder().decode(CodexRefreshResponse.self, from: data)
+    }
+
+    private static func isTokenRevokedResponse(_ body: String) -> Bool {
+        body.localizedCaseInsensitiveContains("token_revoked") ||
+            body.localizedCaseInsensitiveContains("token_invalidated") ||
+            body.localizedCaseInsensitiveContains("invalidated oauth token") ||
+            body.localizedCaseInsensitiveContains("authentication token has been invalidated")
     }
 
     private func formURLEncoded(_ items: [(String, String)]) -> Data {
@@ -528,6 +541,7 @@ public enum CodexQuotaError: LocalizedError, Equatable {
     case httpStatus(Int, message: String)
     case noQuotaInResponse
     case refreshFailed(String)
+    case tokenRevoked(String)
 
     public var errorDescription: String? {
         switch self {
@@ -543,6 +557,8 @@ public enum CodexQuotaError: LocalizedError, Equatable {
             return "The Codex usage API response did not include 5-hour or weekly quota windows."
         case let .refreshFailed(message):
             return "Codex browser login refresh failed: \(message)"
+        case .tokenRevoked:
+            return "Codex login was revoked. Reconnect this account from AgentBar settings."
         }
     }
 }
@@ -596,6 +612,10 @@ private struct CodexRefreshResponse: Decodable {
 
 private extension CodexQuotaError {
     var isAuthenticationFailure: Bool {
+        if case .tokenRevoked = self {
+            return true
+        }
+
         guard case let .httpStatus(code, _) = self else {
             return false
         }

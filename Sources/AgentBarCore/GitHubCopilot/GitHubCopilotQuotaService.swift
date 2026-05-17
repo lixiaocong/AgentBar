@@ -42,7 +42,7 @@ public struct GitHubCopilotQuotaService: Sendable {
 
     public var isAvailable: Bool {
         if let accountID = installation.appManagedAccountID {
-            return AgentProviderAppAuthStore.hasSession(provider: .githubCopilot, accountID: accountID)
+            return !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
         return false

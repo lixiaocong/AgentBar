@@ -142,6 +142,13 @@ struct SettingsView: View {
                 )
                 .toggleStyle(.checkbox)
 
+                if status.provider == .codex, status.errorMessage != nil {
+                    Button(model.isCodexReconnectInProgress(status.account) ? "Reconnecting…" : "Reconnect") {
+                        model.reconnectCodexAccount(status.account)
+                    }
+                    .disabled(model.isCodexReconnectInProgress(status.account))
+                }
+
                 Button("Sign Out") {
                     model.removeConfiguredAccount(status.account)
                 }
