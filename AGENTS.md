@@ -27,6 +27,12 @@ Sources/AgentBar/
 └── Views/
     ├── MenuBarView.swift       Tri-provider quota gauges, action buttons
     └── SettingsView.swift      Credential status for all providers, open-config buttons
+Sources/AgentBarCore/
+└── Widget/
+    ├── AgentWidgetState.swift            Shared state model + AgentWidgetStateStore (App Group container)
+    └── AgentAccountSnapshotLoader.swift  Loads each provider's snapshot for the widget timeline
+Sources/AgentBarWidgetExtension/
+└── AgentBarWidgetExtension.swift  Widget, timeline provider, view, and WidgetConfigurationIntent
 Tests/AgentBarTests/
 ├── CodexQuotaServiceTests.swift
 ├── GitHubCopilotQuotaServiceTests.swift
@@ -257,6 +263,57 @@ Test targets:
 | `decodesGeminiQuotaPayload` | Happy-path JSON → `AgentQuotaSnapshot` for Gemini with per-model metrics |
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
+
+---
+
+## Widget extension
+
+The macOS desktop widget (`Sources/AgentBarWidgetExtension/AgentBarWidgetExtension.swift`) shows **one** agent account per widget instance. The list of available accounts is materialized into a shared `AgentWidgetState` blob written by the host app into an App Group container, and read back by the widget timeline provider through `AgentWidgetStateStore`.
+
+Each widget instance is configured via a `WidgetConfigurationIntent`:
+
+```swift
+struct AgentBarWidgetConfigurationIntent: WidgetConfigurationIntent {
+    @Parameter(
+        title: "Agent",
+        description: "The AgentBar account to show in this widget.",
+        optionsProvider: AgentBarWidgetAgentOptionsProvider()
+    )
+    var agentID: String?
+}
+```
+
+The parameter is the **stable account identifier string** (`AgentWidgetProviderState.id`, of the form `"<provider>::<directory.path>"`). The options for the Edit screen come from a `DynamicOptionsProvider` that reads the current shared state:
+
+```swift
+struct AgentBarWidgetAgentOptionsProvider: DynamicOptionsProvider {
+    func results() async throws -> [String] {
+        (AgentWidgetStateStore().loadIfPresent()?.sortedProviders ?? [])
+            .map(\.id)
+    }
+}
+```
+
+In the timeline provider, `configuration.agentID` is trimmed and used to look up the matching `AgentWidgetProviderState`. If the configured ID is missing or no longer present in the latest shared state, the widget falls back to the first provider in `AgentProviderKind.sortOrder` (codex → copilot → gemini → claude). The same ID also drives the debug `Edit Agent` / `Resolved` pills.
+
+### Why this matters: AppEntity parameters don't persist on ad‑hoc builds
+
+The widget previously declared its parameter as an `AppEntity` (`AgentWidgetSelection`) backed by an `EntityQuery`. On macOS WidgetKit, that pattern only round‑trips reliably when the app is signed with a real Apple Developer identity. AgentBar is built ad‑hoc (`CODE_SIGNING_ALLOWED: NO` in `project.yml`), so `configuration.agent` always came back as `nil` after a timeline reload — every widget instance silently fell through to `providers.first?.id` and therefore showed the **same** account (whichever sorted first), regardless of what the user picked in the Edit screen. The sibling project `computer-bar` documents the same limitation in `SelectComputerBarHostIntent`.
+
+### The fix
+
+Mirror the working `computer-bar` pattern: replace the `AppEntity` parameter with a plain `String?` parameter backed by a `DynamicOptionsProvider`. Plain‑value parameters (`String`, `Int`, `Bool`, …) are persisted directly by WidgetKit per widget instance and survive timeline reloads even without a Developer ID signing certificate, because there is no entity round‑trip that can fail.
+
+What changed in `AgentBarWidgetExtension.swift`:
+
+- Removed `AgentWidgetSelection: AppEntity` and `AgentWidgetSelectionQuery: EntityQuery`.
+- Added `AgentBarWidgetAgentOptionsProvider: DynamicOptionsProvider` returning `[String]` IDs from the shared state.
+- Replaced `@Parameter var agent: AgentWidgetSelection?` with `@Parameter var agentID: String?`, wired to the new options provider; updated `parameterSummary` to `Show \(\.$agentID)`.
+- Reworked the timeline provider so `loadEntry` reads `configuration.agentID` and `resolvedConfiguredAgentID` returns the trimmed non‑empty raw string (no more `configuration.agent?.id`). `resolvedAgentID` keeps the “first provider” fallback only when the configured ID is missing or no longer present in the latest shared state.
+
+Existing widget instances configured under the old `AppEntity` parameter land on the fallback until the user re‑edits each widget and picks the desired agent — that is the same behaviour as a fresh install and is unavoidable when the parameter type changes.
+
+If richer per‑instance Edit UI (with subtitles, multiple copies on the desktop, etc.) is ever needed, the alternative is the interactive‑intent + file‑based persistence pattern documented in `computer-bar`'s `SelectComputerBarHostIntent` comment. Do not reintroduce an `AppEntity`‑typed configuration parameter as long as the build remains ad‑hoc signed.
 
 ---
 

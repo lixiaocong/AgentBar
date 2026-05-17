@@ -6,146 +6,54 @@ import WidgetKit
 import AgentBarCore
 #endif
 
-// MARK: - Per-Instance Selection Persistence
-
-/// Persists the selected agent ID to a file in the widget's sandbox.
-/// Written by the interactive SelectAgentBarAgentIntent, read by the timeline provider.
-private enum AgentWidgetSelectionStore {
-    private static let filename = "widget-selection.json"
-
-    struct Selection: Codable {
-        var selectedAgentID: String?
-    }
-
-    static func load() -> Selection {
-        let url = fileURL()
-        guard let data = try? Data(contentsOf: url),
-              let selection = try? JSONDecoder().decode(Selection.self, from: data) else {
-            return Selection(selectedAgentID: nil)
-        }
-        return selection
-    }
-
-    static func save(_ selection: Selection) {
-        let url = fileURL()
-        guard let data = try? JSONEncoder().encode(selection) else { return }
-        try? data.write(to: url, options: .atomic)
-    }
-
-    static func fileURL() -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(filename)
-    }
-}
-
-// MARK: - Interactive Intent for Agent Selection
-
-/// Interactive intent triggered by tapping an agent tab in the widget.
-struct SelectAgentBarAgentIntent: AppIntent {
-    static let title: LocalizedStringResource = "Select Agent"
-    static let description = IntentDescription("Selects which agent to display in the widget.")
-
-    @Parameter(title: "Agent ID")
-    var agentID: String
-
-    init() {
-        self.agentID = ""
-    }
-
-    init(agentID: String) {
-        self.agentID = agentID
-    }
-
-    func perform() async throws -> some IntentResult {
-        var selection = AgentWidgetSelectionStore.load()
-        selection.selectedAgentID = agentID
-        AgentWidgetSelectionStore.save(selection)
-        return .result()
-    }
-}
-
-// MARK: - Widget Configuration (kept for Edit UI, even though persistence is broken)
+// MARK: - Widget Configuration
 
 struct AgentBarWidgetEntry: TimelineEntry {
     let date: Date
     let state: AgentWidgetState
     let selectedAgentID: String?
-    let availableProviders: [AgentWidgetProviderState]
 }
 
-struct AgentWidgetSelection: AppEntity {
-    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Agent")
-    static let defaultQuery = AgentWidgetSelectionQuery()
+private enum AgentBarWidgetAccountValue {
+    /// Returns a human-friendly display name for the Edit Widget picker.
+    /// Format: "Provider: account" or just "Provider" if no account label.
+    static func widgetValue(for state: AgentWidgetProviderState) -> String {
+        if let label = state.displayLabel {
+            return "\(state.provider.title): \(label)"
+        }
+        return state.provider.title
+    }
 
-    let id: String
-    let title: String
-    let subtitle: String
+    /// Resolves a friendly display name back to the internal provider ID.
+    static func providerID(for widgetValue: String, in state: AgentWidgetState?) -> String? {
+        let trimmed = widgetValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
 
-    var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(
-            title: "\(title)",
-            subtitle: "\(subtitle)"
-        )
+        let providers = state?.sortedProviders ?? []
+
+        // Try exact match on display name
+        if let match = providers.first(where: { Self.widgetValue(for: $0) == trimmed }) {
+            return match.id
+        }
+
+        // Try match on provider title only
+        if let match = providers.first(where: { $0.provider.title == trimmed }) {
+            return match.id
+        }
+
+        // Try match on raw ID (fallback for existing selections)
+        if let match = providers.first(where: { $0.id == trimmed }) {
+            return match.id
+        }
+
+        return nil
     }
 }
 
-struct AgentWidgetSelectionQuery: EntityQuery {
-    func entities(for identifiers: [AgentWidgetSelection.ID]) async throws -> [AgentWidgetSelection] {
-        let selections = Self.availableSelections()
-
-        // Persist selection when system resolves an entity (Edit Widget confirmation)
-        if let id = identifiers.first {
-            var stored = AgentWidgetSelectionStore.load()
-            stored.selectedAgentID = id
-            AgentWidgetSelectionStore.save(stored)
-        }
-
-        return identifiers.map { identifier in
-            selections.first { $0.id == identifier } ?? AgentWidgetSelection(
-                id: identifier,
-                title: "Unavailable Agent",
-                subtitle: identifier
-            )
-        }
-    }
-
-    func suggestedEntities() async throws -> [AgentWidgetSelection] {
-        Self.availableSelections()
-    }
-
-    func defaultResult() async -> AgentWidgetSelection? {
-        nil
-    }
-
-    private static func availableSelections() -> [AgentWidgetSelection] {
-        let state = AgentWidgetStateStore().loadIfPresent()
-        return (state?.sortedProviders ?? AgentWidgetState.preview.sortedProviders)
-            .map(selection)
-    }
-
-    private static func selection(for state: AgentWidgetProviderState) -> AgentWidgetSelection {
-        let accountLabel = state.snapshot?.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title: String
-        if let accountLabel, !accountLabel.isEmpty {
-            title = "\(state.provider.title): \(accountLabel)"
-        } else {
-            title = state.provider.title
-        }
-
-        let subtitle: String
-        if let metric = state.snapshot?.highlightMetric {
-            subtitle = "\(metric.percentText) remaining"
-        } else if state.snapshot != nil {
-            subtitle = "Ready"
-        } else if state.errorMessage != nil {
-            subtitle = "Error"
-        } else if state.isAvailable {
-            subtitle = "Refreshing"
-        } else {
-            subtitle = "No credentials"
-        }
-
-        return AgentWidgetSelection(id: state.id, title: title, subtitle: subtitle)
+struct AgentBarWidgetAgentOptionsProvider: DynamicOptionsProvider {
+    func results() async throws -> [String] {
+        (AgentWidgetStateStore().loadIfPresent()?.sortedProviders ?? [])
+            .map(AgentBarWidgetAccountValue.widgetValue)
     }
 }
 
@@ -153,11 +61,15 @@ struct AgentBarWidgetConfigurationIntent: WidgetConfigurationIntent {
     static let title: LocalizedStringResource = "Agent Bar"
     static let description = IntentDescription("Shows one local agent quota account on the desktop.")
 
-    @Parameter(title: "Agent", description: "The AgentBar account to show in this widget.")
-    var agent: AgentWidgetSelection?
+    @Parameter(
+        title: "Agent",
+        description: "The AgentBar account to show in this widget.",
+        optionsProvider: AgentBarWidgetAgentOptionsProvider()
+    )
+    var agentID: String?
 
     static var parameterSummary: some ParameterSummary {
-        Summary("Show \(\.$agent)")
+        Summary("Show \(\.$agentID)")
     }
 }
 
@@ -167,11 +79,11 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
     typealias Intent = AgentBarWidgetConfigurationIntent
 
     func placeholder(in context: Context) -> AgentBarWidgetEntry {
-        AgentBarWidgetEntry(
+        let selectedAgent = AgentWidgetState.preview.sortedProviders.first
+        return AgentBarWidgetEntry(
             date: Date(),
             state: .preview,
-            selectedAgentID: AgentWidgetState.preview.sortedProviders.first?.id,
-            availableProviders: AgentWidgetState.preview.sortedProviders
+            selectedAgentID: selectedAgent?.id
         )
     }
 
@@ -183,13 +95,6 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
             return placeholder(in: context)
         }
 
-        // Capture any non-nil intent selection
-        if let intentID = configuration.agent?.id {
-            var selection = AgentWidgetSelectionStore.load()
-            selection.selectedAgentID = intentID
-            AgentWidgetSelectionStore.save(selection)
-        }
-
         return loadEntry(for: configuration)
     }
 
@@ -197,13 +102,6 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
         for configuration: AgentBarWidgetConfigurationIntent,
         in context: Context
     ) async -> Timeline<AgentBarWidgetEntry> {
-        // Persist intent selection if available
-        if let intentID = configuration.agent?.id {
-            var selection = AgentWidgetSelectionStore.load()
-            selection.selectedAgentID = intentID
-            AgentWidgetSelectionStore.save(selection)
-        }
-
         let entry = loadEntry(for: configuration)
         let nextRefreshDate = entry.date.addingTimeInterval(
             AgentBarWidgetConstants.timelineRefreshInterval
@@ -217,34 +115,29 @@ struct AgentBarWidgetTimelineProvider: AppIntentTimelineProvider {
     private func loadEntry(for configuration: AgentBarWidgetConfigurationIntent) -> AgentBarWidgetEntry {
         let store = AgentWidgetStateStore()
         let cached = store.loadIfPresent()
-        let providers = cached?.sortedProviders ?? []
         let selectedID = resolvedAgentID(from: configuration, state: cached)
 
         return AgentBarWidgetEntry(
             date: Date(),
             state: cached ?? .empty,
-            selectedAgentID: selectedID,
-            availableProviders: providers
+            selectedAgentID: selectedID
         )
     }
 
-    /// Resolves the selected agent: intent → persisted file → first provider.
-    private func resolvedAgentID(from configuration: AgentBarWidgetConfigurationIntent, state: AgentWidgetState?) -> String? {
+    /// Resolves the selected agent from this widget instance's edit configuration.
+    private func resolvedAgentID(
+        from configuration: AgentBarWidgetConfigurationIntent,
+        state: AgentWidgetState?
+    ) -> String? {
         let providers = state?.sortedProviders ?? []
 
-        // Intent parameter (if system persistence ever works)
-        if let intentID = configuration.agent?.id,
-           providers.contains(where: { $0.id == intentID }) {
-            return intentID
+        if let raw = configuration.agentID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           let resolvedID = AgentBarWidgetAccountValue.providerID(for: raw, in: state),
+           providers.contains(where: { $0.id == resolvedID }) {
+            return resolvedID
         }
 
-        // File-based fallback (written by interactive intent button)
-        if let fileID = AgentWidgetSelectionStore.load().selectedAgentID,
-           providers.contains(where: { $0.id == fileID }) {
-            return fileID
-        }
-
-        // Fall back to first provider
         return providers.first?.id
     }
 }
@@ -340,35 +233,10 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 0)
             }
 
-            // Agent picker tabs (interactive intent buttons)
-            if entry.availableProviders.count > 1 {
-                agentPickerBar(selectedID: state.id)
-            }
+            Spacer(minLength: 0)
         }
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func agentPickerBar(selectedID: String) -> some View {
-        HStack(spacing: 4) {
-            ForEach(entry.availableProviders) { provider in
-                Button(intent: SelectAgentBarAgentIntent(agentID: provider.id)) {
-                    Text(provider.provider.title)
-                        .font(.system(size: 9, weight: provider.id == selectedID ? .bold : .medium))
-                        .lineLimit(1)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(provider.id == selectedID
-                                      ? tint(for: provider.provider).opacity(0.2)
-                                      : Color.clear)
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer(minLength: 0)
-        }
     }
 
     private func header(_ state: AgentWidgetProviderState) -> some View {
@@ -378,7 +246,7 @@ struct AgentBarDesktopWidgetView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
 
-            if let accountLabel = state.snapshot?.accountLabel {
+            if let accountLabel = state.displayLabel {
                 Text(accountLabel)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(palette.secondaryText)

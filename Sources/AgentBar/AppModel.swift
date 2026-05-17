@@ -1130,6 +1130,7 @@ final class AppModel {
                     AgentWidgetProviderState(
                         id: status.id,
                         provider: provider,
+                        accountLabel: status.displayLabel,
                         snapshot: status.snapshot,
                         errorMessage: status.errorMessage,
                         isAvailable: status.credentialsDetected

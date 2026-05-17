@@ -15,6 +15,7 @@ public enum AgentBarWidgetConstants {
 public struct AgentWidgetProviderState: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let provider: AgentProviderKind
+    public let accountLabel: String?
     public let snapshot: AgentQuotaSnapshot?
     public let errorMessage: String?
     public let isAvailable: Bool
@@ -22,12 +23,14 @@ public struct AgentWidgetProviderState: Codable, Equatable, Identifiable, Sendab
     public init(
         id: String,
         provider: AgentProviderKind,
+        accountLabel: String? = nil,
         snapshot: AgentQuotaSnapshot?,
         errorMessage: String?,
         isAvailable: Bool
     ) {
         self.id = id
         self.provider = provider
+        self.accountLabel = accountLabel
         self.snapshot = snapshot
         self.errorMessage = errorMessage
         self.isAvailable = isAvailable
@@ -36,6 +39,7 @@ public struct AgentWidgetProviderState: Codable, Equatable, Identifiable, Sendab
     private enum CodingKeys: String, CodingKey {
         case id
         case provider
+        case accountLabel
         case snapshot
         case errorMessage
         case isAvailable
@@ -47,9 +51,20 @@ public struct AgentWidgetProviderState: Codable, Equatable, Identifiable, Sendab
 
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? provider.rawValue
         self.provider = provider
+        accountLabel = try container.decodeIfPresent(String.self, forKey: .accountLabel)
         snapshot = try container.decodeIfPresent(AgentQuotaSnapshot.self, forKey: .snapshot)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
         isAvailable = try container.decodeIfPresent(Bool.self, forKey: .isAvailable) ?? false
+    }
+
+    public var displayLabel: String? {
+        let label = snapshot?.accountLabel ?? accountLabel
+        guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !label.isEmpty else {
+            return nil
+        }
+
+        return label
     }
 }
 
