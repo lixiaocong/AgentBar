@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 public struct AgentProviderStoredAuthSession: Codable, Equatable, Sendable {
     public let provider: AgentProviderKind
@@ -34,7 +33,7 @@ public struct AgentProviderStoredAuthSession: Codable, Equatable, Sendable {
 
 public enum AgentProviderAppAuthStore {
     public static func keychainService(for provider: AgentProviderKind) -> String {
-        "AgentBar \(provider.title) Auth"
+        "provider.\(provider.rawValue)"
     }
 
     public static func accountsDirectory(for provider: AgentProviderKind) -> URL {
@@ -92,9 +91,9 @@ public enum AgentProviderAppAuthStore {
             throw AgentProviderAppAuthStoreError.encodingFailed
         }
 
-        try KeychainAgentProviderAuthStore.write(
+        try AgentBarKeychainStore.write(
             serialized,
-            service: keychainService(for: session.provider),
+            logicalService: keychainService(for: session.provider),
             account: session.accountID
         )
     }
@@ -103,8 +102,8 @@ public enum AgentProviderAppAuthStore {
         provider: AgentProviderKind,
         accountID: String
     ) throws -> AgentProviderStoredAuthSession? {
-        guard let serialized = try KeychainAgentProviderAuthStore.read(
-            service: keychainService(for: provider),
+        guard let serialized = try AgentBarKeychainStore.read(
+            logicalService: keychainService(for: provider),
             account: accountID
         ) else {
             return nil
@@ -123,8 +122,8 @@ public enum AgentProviderAppAuthStore {
 
     @discardableResult
     public static func deleteSession(provider: AgentProviderKind, accountID: String) throws -> Bool {
-        try KeychainAgentProviderAuthStore.delete(
-            service: keychainService(for: provider),
+        try AgentBarKeychainStore.delete(
+            logicalService: keychainService(for: provider),
             account: accountID
         )
     }
@@ -179,7 +178,6 @@ public enum AgentProviderAppAuthStore {
 public enum AgentProviderAppAuthStoreError: LocalizedError {
     case encodingFailed
     case decodingFailed
-    case keychainStatus(OSStatus)
 
     public var errorDescription: String? {
         switch self {
@@ -187,85 +185,6 @@ public enum AgentProviderAppAuthStoreError: LocalizedError {
             return "Credentials could not be encoded for storage."
         case .decodingFailed:
             return "Stored credentials could not be decoded."
-        case let .keychainStatus(status):
-            return "Keychain operation failed with status \(status)."
-        }
-    }
-}
-
-private enum KeychainAgentProviderAuthStore {
-    static func read(service: String, account: String) throws -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data,
-                  let value = String(data: data, encoding: .utf8) else {
-                return nil
-            }
-            return value
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw AgentProviderAppAuthStoreError.keychainStatus(status)
-        }
-    }
-
-    static func write(_ value: String, service: String, account: String) throws {
-        let data = Data(value.utf8)
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        let attributes: [String: Any] = [
-            kSecValueData as String: data
-        ]
-
-        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
-        switch updateStatus {
-        case errSecSuccess:
-            return
-        case errSecItemNotFound:
-            break
-        default:
-            throw AgentProviderAppAuthStoreError.keychainStatus(updateStatus)
-        }
-
-        var addQuery = baseQuery
-        addQuery[kSecValueData as String] = data
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw AgentProviderAppAuthStoreError.keychainStatus(addStatus)
-        }
-    }
-
-    @discardableResult
-    static func delete(service: String, account: String) throws -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        let status = SecItemDelete(query as CFDictionary)
-        switch status {
-        case errSecSuccess:
-            return true
-        case errSecItemNotFound:
-            return false
-        default:
-            throw AgentProviderAppAuthStoreError.keychainStatus(status)
         }
     }
 }

@@ -78,7 +78,10 @@ struct SettingsView: View {
 
                 if model.supportsBrowserSignIn(for: provider) {
                     Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
-                        model.signInWithBrowser(for: provider, forceAccountSelection: hasConfiguredAccounts)
+                        model.signInWithBrowser(
+                            for: provider,
+                            forceAccountSelection: provider == .codex || hasConfiguredAccounts
+                        )
                     }
                     .disabled(model.isLoginInProgress(for: provider))
 

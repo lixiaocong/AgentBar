@@ -12,7 +12,7 @@ import AgentBarCore
 struct CodexBrowserLoginService {
     private let callbackPorts: [UInt16] = [1457, 1455]
 
-    func signIn(mode: CodexBrowserLoginMode = .browserSession) async throws -> CodexStoredAuthSession {
+    func signIn() async throws -> CodexStoredAuthSession {
         let pkce = try CodexPKCE.generate()
         let state = try CodexPKCE.randomURLSafeString(byteCount: 32)
         let callbackServer = try await CodexOAuthCallbackServer.start(preferredPorts: callbackPorts)
@@ -20,8 +20,7 @@ struct CodexBrowserLoginService {
         let authURL = try buildAuthorizeURL(
             redirectURI: redirectURI,
             codeChallenge: pkce.codeChallenge,
-            state: state,
-            mode: mode
+            state: state
         )
 
         guard NSWorkspace.shared.open(authURL) else {
@@ -68,11 +67,10 @@ struct CodexBrowserLoginService {
     func buildAuthorizeURL(
         redirectURI: String,
         codeChallenge: String,
-        state: String,
-        mode: CodexBrowserLoginMode = .browserSession
+        state: String
     ) throws -> URL {
         var components = URLComponents(url: CodexOAuthConfiguration.authorizationURL, resolvingAgainstBaseURL: false)
-        var queryItems = [
+        let queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: CodexOAuthConfiguration.clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
@@ -82,9 +80,9 @@ struct CodexBrowserLoginService {
             URLQueryItem(name: "id_token_add_organizations", value: "true"),
             URLQueryItem(name: "codex_cli_simplified_flow", value: "true"),
             URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "originator", value: CodexOAuthConfiguration.originator)
+            URLQueryItem(name: "originator", value: CodexOAuthConfiguration.originator),
+            URLQueryItem(name: "prompt", value: "login consent")
         ]
-        queryItems.append(contentsOf: mode.additionalAuthorizeQueryItems)
         components?.queryItems = queryItems
 
         guard let url = components?.url else {
@@ -135,20 +133,6 @@ struct CodexBrowserLoginService {
         .joined(separator: "&")
 
         return Data(body.utf8)
-    }
-}
-
-enum CodexBrowserLoginMode: Equatable, Sendable {
-    case browserSession
-    case forceAccountSelection
-
-    var additionalAuthorizeQueryItems: [URLQueryItem] {
-        switch self {
-        case .browserSession:
-            return [URLQueryItem(name: "prompt", value: "consent")]
-        case .forceAccountSelection:
-            return [URLQueryItem(name: "prompt", value: "login consent")]
-        }
     }
 }
 

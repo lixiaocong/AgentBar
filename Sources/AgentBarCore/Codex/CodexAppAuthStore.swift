@@ -1,7 +1,5 @@
 import CryptoKit
 import Foundation
-import LocalAuthentication
-import Security
 
 public enum CodexOAuthConfiguration {
     public static let issuer = URL(string: "https://auth.openai.com")!
@@ -77,7 +75,7 @@ public struct CodexTokenIdentity: Equatable, Sendable {
 }
 
 public enum CodexAppAuthStore {
-    public static let keychainService = "AgentBar Codex Browser Auth"
+    public static let keychainService = "codex"
 
     private static let accountsDirectoryName = "CodexAccounts"
     private static let accountDirectoryPrefix = "account-"
@@ -134,16 +132,16 @@ public enum CodexAppAuthStore {
             throw CodexAppAuthStoreError.encodingFailed
         }
 
-        try KeychainCodexAuthStore.write(
+        try AgentBarKeychainStore.write(
             serialized,
-            service: keychainService,
+            logicalService: keychainService,
             account: session.storageAccountID
         )
     }
 
     public static func loadSession(accountID: String) throws -> CodexStoredAuthSession? {
-        guard let serialized = try KeychainCodexAuthStore.read(
-            service: keychainService,
+        guard let serialized = try AgentBarKeychainStore.read(
+            logicalService: keychainService,
             account: accountID
         ) else {
             return nil
@@ -179,7 +177,7 @@ public enum CodexAppAuthStore {
 
     @discardableResult
     public static func deleteSession(accountID: String) throws -> Bool {
-        try KeychainCodexAuthStore.delete(service: keychainService, account: accountID)
+        try AgentBarKeychainStore.delete(logicalService: keychainService, account: accountID)
     }
 
     public static func deleteAccountDirectory(accountID: String) throws {
@@ -434,7 +432,6 @@ public enum CodexAppAuthStore {
 public enum CodexAppAuthStoreError: LocalizedError {
     case encodingFailed
     case decodingFailed
-    case keychainStatus(OSStatus)
 
     public var errorDescription: String? {
         switch self {
@@ -442,90 +439,6 @@ public enum CodexAppAuthStoreError: LocalizedError {
             return "Codex credentials could not be encoded for storage."
         case .decodingFailed:
             return "Stored Codex credentials could not be decoded."
-        case let .keychainStatus(status):
-            return "Keychain operation failed with status \(status)."
-        }
-    }
-}
-
-private enum KeychainCodexAuthStore {
-    static func read(service: String, account: String) throws -> String? {
-        let authenticationContext = LAContext()
-        authenticationContext.interactionNotAllowed = true
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: authenticationContext
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data,
-                  let value = String(data: data, encoding: .utf8) else {
-                return nil
-            }
-            return value
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw CodexAppAuthStoreError.keychainStatus(status)
-        }
-    }
-
-    static func write(_ value: String, service: String, account: String) throws {
-        let data = Data(value.utf8)
-        let baseQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        let attributes: [String: Any] = [
-            kSecValueData as String: data
-        ]
-
-        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-
-        guard updateStatus == errSecItemNotFound else {
-            throw CodexAppAuthStoreError.keychainStatus(updateStatus)
-        }
-
-        var insertQuery = baseQuery
-        insertQuery[kSecValueData as String] = data
-        insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-
-        let addStatus = SecItemAdd(insertQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw CodexAppAuthStoreError.keychainStatus(addStatus)
-        }
-    }
-
-    @discardableResult
-    static func delete(service: String, account: String) throws -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        let status = SecItemDelete(query as CFDictionary)
-        switch status {
-        case errSecSuccess:
-            return true
-        case errSecItemNotFound:
-            return false
-        default:
-            throw CodexAppAuthStoreError.keychainStatus(status)
         }
     }
 }

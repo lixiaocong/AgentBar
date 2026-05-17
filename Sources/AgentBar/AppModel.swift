@@ -13,7 +13,7 @@ import WidgetKit
 @MainActor
 @Observable
 final class AppModel {
-    static let shared = AppModel(startImmediately: false, migrateLegacyUserDefaults: true)
+    static let shared = AppModel(startImmediately: false)
     static let defaultRefreshIntervalSeconds = 10
     static let minimumRefreshIntervalSeconds = 5
     static let maximumRefreshIntervalSeconds = 300
@@ -26,9 +26,6 @@ final class AppModel {
     private static let menuBarSelectedAccountIDsDefaultsKey = "menuBarSelectedAccountIDs"
     private static let refreshIntervalDefaultsKey = "refreshIntervalSeconds"
     private static let configuredAccountDirectoriesDefaultsKeyPrefix = "configuredAccountDirectories."
-    private static let legacyAppBundleIdentifier = "com.agentbar.app"
-    private static let legacyUserDefaultsMigrationKey = "didMigrateLegacyUserDefaultsFromComAgentbarApp"
-
     private let userDefaults: UserDefaults
     private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
     private var refreshTask: Task<Void, Never>?
@@ -122,13 +119,8 @@ final class AppModel {
     init(
         userDefaults: UserDefaults = .standard,
         providerAvailabilityResolver: (@Sendable () -> AgentProviderAvailability)? = nil,
-        startImmediately: Bool = true,
-        migrateLegacyUserDefaults: Bool = false
+        startImmediately: Bool = true
     ) {
-        if migrateLegacyUserDefaults {
-            Self.migrateLegacyUserDefaults(to: userDefaults)
-        }
-
         self.userDefaults = userDefaults
         self.providerAvailabilityOverride = providerAvailabilityResolver
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
@@ -410,8 +402,8 @@ final class AppModel {
         }
     }
 
-    func signInToCodexWithBrowser(forceAccountSelection: Bool = false) {
-        signInWithBrowser(for: .codex, forceAccountSelection: forceAccountSelection)
+    func signInToCodexWithBrowser() {
+        signInWithBrowser(for: .codex)
     }
 
     func isLoginInProgress(for provider: AgentProviderKind) -> Bool {
@@ -442,7 +434,7 @@ final class AppModel {
         }
 
         if provider == .codex {
-            signInToCodexWithBrowserImpl(forceAccountSelection: forceAccountSelection)
+            signInToCodexWithBrowserImpl()
             return
         }
 
@@ -503,7 +495,7 @@ final class AppModel {
         }
     }
 
-    private func signInToCodexWithBrowserImpl(forceAccountSelection: Bool = false) {
+    private func signInToCodexWithBrowserImpl() {
         guard !isCodexLoginInProgress else {
             return
         }
@@ -517,19 +509,18 @@ final class AppModel {
             }
 
             do {
-                let loginMode: CodexBrowserLoginMode = forceAccountSelection ? .forceAccountSelection : .browserSession
-                let browserSession = try await CodexBrowserLoginService().signIn(mode: loginMode)
+                let authSession = try await CodexBrowserLoginService().signIn()
                 let localAccountID = CodexAppAuthStore.localAccountID(
-                    for: browserSession,
+                    for: authSession,
                     existingLocalAccountIDs: configuredCodexLocalAccountIDs()
                 )
                 let session = CodexStoredAuthSession(
-                    idToken: browserSession.idToken,
-                    accessToken: browserSession.accessToken,
-                    refreshToken: browserSession.refreshToken,
-                    accountID: browserSession.accountID,
+                    idToken: authSession.idToken,
+                    accessToken: authSession.accessToken,
+                    refreshToken: authSession.refreshToken,
+                    accountID: authSession.accountID,
                     localAccountID: localAccountID,
-                    lastRefresh: browserSession.lastRefresh
+                    lastRefresh: authSession.lastRefresh
                 )
                 try CodexAppAuthStore.save(session: session)
                 try CodexAppAuthStore.ensureAccountDirectoryExists(for: localAccountID)
@@ -1008,31 +999,6 @@ final class AppModel {
                 loadConfiguredAccounts(for: provider, from: userDefaults)
             )
         })
-    }
-
-    private static func migrateLegacyUserDefaults(to userDefaults: UserDefaults) {
-        guard userDefaults.object(forKey: legacyUserDefaultsMigrationKey) == nil else {
-            return
-        }
-
-        defer {
-            userDefaults.set(true, forKey: legacyUserDefaultsMigrationKey)
-        }
-
-        guard let legacyDefaults = UserDefaults(suiteName: legacyAppBundleIdentifier) else {
-            return
-        }
-
-        let keysToMigrate = [
-            menuBarMaxDisplayedAccountsDefaultsKey,
-            menuBarSelectedAccountIDsDefaultsKey,
-            refreshIntervalDefaultsKey,
-        ] + AgentProviderKind.allCases.map { configuredAccountDirectoriesDefaultsKey(for: $0) }
-
-        for key in keysToMigrate where userDefaults.object(forKey: key) == nil {
-            guard let legacyValue = legacyDefaults.object(forKey: key) else { continue }
-            userDefaults.set(legacyValue, forKey: key)
-        }
     }
 
     private static func loadConfiguredAccounts(

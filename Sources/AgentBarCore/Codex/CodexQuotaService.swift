@@ -26,9 +26,6 @@ public struct CodexInstallation: Sendable {
         )
     }
 
-    public var authFile: URL {
-        rootDirectory.appending(path: "auth.json")
-    }
 }
 
 public struct CodexQuotaService: Sendable {
@@ -78,7 +75,7 @@ public struct CodexQuotaService: Sendable {
             return CodexAppAuthStore.hasSession(accountID: accountID)
         }
 
-        return FileManager.default.fileExists(atPath: installation.authFile.path)
+        return false
     }
 
     public func loadSnapshot() async throws -> AgentQuotaSnapshot {
@@ -189,64 +186,9 @@ public struct CodexQuotaService: Sendable {
             return appManagedCredentials(from: session, storageAccountID: accountID)
         }
 
-        let rootDirectory = installation.rootDirectory
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: rootDirectory.path) else {
-            let err = CodexQuotaError.missingCodexDirectory(rootDirectory.path)
-            logError("[Codex] \(err.errorDescription ?? "\(err)")")
-            throw err
-        }
-
-        let authFile = installation.authFile
-        let data: Data
-        do {
-            data = try Data(contentsOf: authFile)
-        } catch {
-            logError("[Codex] Cannot read auth.json: \(error)")
-            throw error
-        }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let auth: CodexStoredAuth
-        do {
-            auth = try decoder.decode(CodexStoredAuth.self, from: data)
-        } catch {
-            logError("[Codex] auth.json decode failed: \(error)")
-            throw error
-        }
-
-        if let authMode = auth.authMode?.lowercased(), authMode.contains("api_key") {
-            logError("[Codex] \(CodexQuotaError.unsupportedAuthMode.errorDescription!)")
-            throw CodexQuotaError.unsupportedAuthMode
-        }
-
-        guard let accessToken = auth.tokens?.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !accessToken.isEmpty else {
-            logError("[Codex] \(CodexQuotaError.missingAccessToken.errorDescription!)")
-            throw CodexQuotaError.missingAccessToken
-        }
-
-        guard let accountID = auth.tokens?.accountId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !accountID.isEmpty else {
-            logError("[Codex] \(CodexQuotaError.missingAccountID.errorDescription!)")
-            throw CodexQuotaError.missingAccountID
-        }
-
-        let accountLabel = preferredAccountLabel(idToken: auth.tokens?.idToken, fallbackAccountID: accountID)
-        let spaceLabel = preferredSpaceLabel(idToken: auth.tokens?.idToken)
-        let identity = auth.tokens?.idToken.flatMap(CodexAppAuthStore.identity(from:))
-        let businessWorkspaceLabel = businessWorkspaceLabel(accountID: accountID, currentIdentity: identity)
-        logDebug("[Codex] Credentials loaded for account \(masked(accountID))")
-        return CodexAuthCredentials(
-            accessToken: accessToken,
-            refreshToken: auth.tokens?.refreshToken,
-            idToken: auth.tokens?.idToken,
-            accountID: accountID,
-            accountLabel: accountLabel,
-            spaceLabel: spaceLabel,
-            businessWorkspaceLabel: businessWorkspaceLabel,
-            appManagedAccountID: nil
-        )
+        let error = CodexQuotaError.missingStoredCredentials("app-managed")
+        logError("[Codex] \(error.errorDescription ?? "\(error)")")
+        throw error
     }
 
     public func preferredAccountLabel(idToken: String?, fallbackAccountID: String) -> String {
@@ -580,11 +522,8 @@ public struct CodexQuotaService: Sendable {
 }
 
 public enum CodexQuotaError: LocalizedError, Equatable {
-    case missingCodexDirectory(String)
     case missingStoredCredentials(String)
-    case unsupportedAuthMode
     case missingAccessToken
-    case missingAccountID
     case invalidResponse
     case httpStatus(Int, message: String)
     case noQuotaInResponse
@@ -592,16 +531,10 @@ public enum CodexQuotaError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case let .missingCodexDirectory(path):
-            return "Codex root not found at \(path)."
         case .missingStoredCredentials:
             return "No AgentBar Codex browser login was found. Sign in from AgentBar settings."
-        case .unsupportedAuthMode:
-            return "Codex cloud quota requires ChatGPT login credentials, not an API-key-only login."
         case .missingAccessToken:
             return "No Codex access token was found. Sign in from AgentBar settings."
-        case .missingAccountID:
-            return "No ChatGPT account id was found for Codex. Sign in from AgentBar settings."
         case .invalidResponse:
             return "The Codex usage API returned an invalid response."
         case let .httpStatus(code, message):
@@ -612,18 +545,6 @@ public enum CodexQuotaError: LocalizedError, Equatable {
             return "Codex browser login refresh failed: \(message)"
         }
     }
-}
-
-private struct CodexStoredAuth: Decodable {
-    let authMode: String?
-    let tokens: CodexStoredTokens?
-}
-
-private struct CodexStoredTokens: Decodable {
-    let idToken: String?
-    let accessToken: String?
-    let refreshToken: String?
-    let accountId: String?
 }
 
 private struct CodexAuthCredentials: Sendable {

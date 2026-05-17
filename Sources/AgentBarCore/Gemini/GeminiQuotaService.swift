@@ -33,9 +33,6 @@ public struct GeminiCLIInstallation: Sendable {
         )
     }
 
-    public var oauthCredsFile: URL { configDirectory.appending(path: "oauth_creds.json") }
-    public var googleAccountsFile: URL { configDirectory.appending(path: "google_accounts.json") }
-
     public var oauthClientSourceCandidates: [URL] {
         var candidates: [URL] = []
 
@@ -97,7 +94,7 @@ public struct GeminiQuotaService: Sendable {
             return AgentProviderAppAuthStore.hasSession(provider: .gemini, accountID: accountID)
         }
 
-        return FileManager.default.fileExists(atPath: installation.oauthCredsFile.path)
+        return false
     }
 
     public func loadSnapshot() async throws -> AgentQuotaSnapshot {
@@ -396,55 +393,7 @@ public struct GeminiQuotaService: Sendable {
             )
         }
 
-        let oauthFile = installation.oauthCredsFile
-        guard FileManager.default.fileExists(atPath: oauthFile.path) else {
-            let msg = "Gemini credentials not found at \(oauthFile.path). Sign in from AgentBar settings."
-            logError(msg)
-            throw GeminiQuotaError.missingCredentialsFile(oauthFile.path)
-        }
-
-        let data: Data
-        do {
-            data = try Data(contentsOf: oauthFile)
-        } catch {
-            logError("[Gemini] Cannot read oauth_creds.json: \(error)")
-            throw error
-        }
-
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let creds: GeminiOAuthCreds
-        do {
-            creds = try decoder.decode(GeminiOAuthCreds.self, from: data)
-        } catch {
-            logError("[Gemini] oauth_creds.json decode failed: \(error)")
-            throw error
-        }
-
-        guard let accessToken = creds.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !accessToken.isEmpty else {
-            logError("[Gemini] No access token found in oauth_creds.json — run `gemini` and sign in")
-            throw GeminiQuotaError.missingAccessToken
-        }
-
-        // Read account label from google_accounts.json
-        let accountLabel = readAccountLabel(for: installation) ?? "Google Account"
-
-        logDebug("[Gemini] Credentials loaded for \(accountLabel)")
-        return GeminiCredentials(
-            accessToken: accessToken,
-            refreshToken: creds.refreshToken,
-            expiryDate: creds.expiryDate,
-            accountLabel: accountLabel,
-            appManagedAccountID: nil
-        )
-    }
-
-    private func readAccountLabel(for installation: GeminiCLIInstallation) -> String? {
-        let file = installation.googleAccountsFile
-        guard let data = try? Data(contentsOf: file) else { return nil }
-        let decoded = try? JSONDecoder().decode(GeminiGoogleAccounts.self, from: data)
-        return decoded?.active
+        throw GeminiQuotaError.missingAppLogin
     }
 
     private func formatModelName(_ modelId: String) -> String {
@@ -477,7 +426,6 @@ public struct GeminiQuotaService: Sendable {
 // MARK: - Errors
 
 public enum GeminiQuotaError: LocalizedError, Equatable {
-    case missingCredentialsFile(String)
     case missingAppLogin
     case missingAccessToken
     case missingRefreshToken
@@ -488,8 +436,6 @@ public enum GeminiQuotaError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case let .missingCredentialsFile(path):
-            return "Gemini credentials not found at \(path). Sign in from AgentBar settings."
         case .missingAppLogin:
             return "No AgentBar Gemini browser login was found. Sign in from AgentBar settings."
         case .missingAccessToken:
@@ -509,16 +455,6 @@ public enum GeminiQuotaError: LocalizedError, Equatable {
 }
 
 // MARK: - Decodable types
-
-private struct GeminiOAuthCreds: Decodable {
-    let accessToken: String?
-    let refreshToken: String?
-    let expiryDate: Double?
-}
-
-private struct GeminiGoogleAccounts: Decodable {
-    let active: String?
-}
 
 private struct GoogleTokenResponse: Decodable {
     let accessToken: String
