@@ -26,11 +26,14 @@ func decodesCodexCloudUsagePayload() throws {
     let snapshot = try CodexQuotaService().decodeSnapshot(
         from: Data(payload.utf8),
         accountLabel: "Account test",
+        spaceLabel: "Personal",
+        businessWorkspaceLabel: "NewsBreak",
         updatedAt: updatedAt
     )
 
     #expect(snapshot.provider == .codex)
     #expect(snapshot.accountLabel == "Account test")
+    #expect(snapshot.spaceLabel == "NewsBreak Business")
     #expect(snapshot.planType == "team")
     #expect(snapshot.sourceSummary == "ChatGPT Codex API")
     #expect(snapshot.updatedAt == updatedAt)
@@ -39,6 +42,32 @@ func decodesCodexCloudUsagePayload() throws {
     #expect(snapshot.metrics.first?.usedPercent == 40)
     #expect(snapshot.metrics.last?.title == "7 day window")
     #expect(snapshot.metrics.last?.usedPercent == 34)
+}
+
+@Test
+func codexDisplaysPersonalProPlanLabel() throws {
+    let payload = """
+    {
+      "plan_type": "prolite",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 0,
+          "limit_window_seconds": 18000,
+          "reset_at": 1775658567
+        }
+      }
+    }
+    """
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "960418051@qq.com",
+        spaceLabel: "Personal",
+        updatedAt: Date(timeIntervalSince1970: 1775600000)
+    )
+
+    #expect(snapshot.spaceLabel == "Personal Pro")
+    #expect(snapshot.planType == "prolite")
 }
 
 @Test
@@ -82,13 +111,29 @@ func codexReadsNamespacedTokenIdentityClaims() {
             "email": "dev@example.com"
           },
           "https://api.openai.com/auth": {
-            "chatgpt_account_id": "account-123"
+            "chatgpt_account_id": "account-123",
+            "organizations": [
+              {
+                "id": "org-work",
+                "title": "Work",
+                "is_default": false
+              },
+              {
+                "id": "org-personal",
+                "title": "Personal",
+                "is_default": true
+              }
+            ]
           }
         }
         """#
     )
 
-    #expect(CodexAppAuthStore.identity(from: token)?.accountID == "account-123")
+    let identity = CodexAppAuthStore.identity(from: token)
+    #expect(identity?.accountID == "account-123")
+    #expect(identity?.spaceID == "org-personal")
+    #expect(identity?.spaceName == "Personal")
+    #expect(identity?.spaceLabel == "Personal")
     #expect(service.preferredAccountLabel(idToken: token, fallbackAccountID: "account-123") == "dev@example.com")
 }
 
@@ -134,11 +179,56 @@ func codexLocalAccountIDKeepsDifferentAccountsWithCollidingAccountID() {
     )
 }
 
+@Test
+func codexLocalAccountIDKeepsDifferentSpacesWithCollidingAccountID() {
+    let existing = makeStoredCodexSession(
+        accountID: "account-shared",
+        subject: "user-one",
+        email: "one@example.com",
+        spaceID: "org-personal",
+        spaceName: "Personal"
+    )
+    let incoming = makeStoredCodexSession(
+        accountID: "account-shared",
+        subject: "user-one",
+        email: "one@example.com",
+        spaceID: "org-work",
+        spaceName: "Work"
+    )
+
+    let localAccountID = CodexAppAuthStore.localAccountID(
+        for: incoming,
+        existingLocalAccountIDs: ["account-shared"],
+        loadExistingSession: { $0 == "account-shared" ? existing : nil }
+    )
+
+    #expect(localAccountID != "account-shared")
+    #expect(localAccountID.hasPrefix("account-shared#"))
+}
+
 private func makeStoredCodexSession(
     accountID: String,
     subject: String,
-    email: String
+    email: String,
+    spaceID: String? = nil,
+    spaceName: String? = nil
 ) -> CodexStoredAuthSession {
+    let organizationJSON: String
+    if let spaceID, let spaceName {
+        organizationJSON = """
+        ,
+            "organizations": [
+              {
+                "id": "\(spaceID)",
+                "title": "\(spaceName)",
+                "is_default": true
+              }
+            ]
+        """
+    } else {
+        organizationJSON = ""
+    }
+
     let token = makeJWT(
         payload: """
         {
@@ -148,6 +238,7 @@ private func makeStoredCodexSession(
           },
           "https://api.openai.com/auth": {
             "chatgpt_account_id": "\(accountID)"
+            \(organizationJSON)
           }
         }
         """

@@ -52,12 +52,27 @@ public struct CodexTokenIdentity: Equatable, Sendable {
     public let accountID: String?
     public let email: String?
     public let name: String?
+    public let spaceID: String?
+    public let spaceName: String?
 
-    public init(subject: String?, accountID: String?, email: String?, name: String?) {
+    public init(
+        subject: String?,
+        accountID: String?,
+        email: String?,
+        name: String?,
+        spaceID: String? = nil,
+        spaceName: String? = nil
+    ) {
         self.subject = subject
         self.accountID = accountID
         self.email = email
         self.name = name
+        self.spaceID = spaceID
+        self.spaceName = spaceName
+    }
+
+    public var spaceLabel: String? {
+        spaceName ?? spaceID
     }
 }
 
@@ -145,6 +160,23 @@ public enum CodexAppAuthStore {
         (try? loadSession(accountID: accountID)) != nil
     }
 
+    public static func storedSessionAccountIDs(fileManager: FileManager = .default) -> [String] {
+        guard let directories = try? fileManager.contentsOfDirectory(
+            at: accountsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return directories
+            .filter { url in
+                (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            }
+            .compactMap(accountID(fromAccountDirectory:))
+            .sorted()
+    }
+
     @discardableResult
     public static func deleteSession(accountID: String) throws -> Bool {
         try KeychainCodexAuthStore.delete(service: keychainService, account: accountID)
@@ -166,12 +198,24 @@ public enum CodexAppAuthStore {
 
         let profile = payload["https://api.openai.com/profile"] as? [String: Any]
         let auth = payload["https://api.openai.com/auth"] as? [String: Any]
+        let organization = selectedOrganization(from: auth)
 
         return CodexTokenIdentity(
             subject: payload["sub"] as? String,
             accountID: auth?["chatgpt_account_id"] as? String,
             email: (payload["email"] as? String) ?? (profile?["email"] as? String),
-            name: (payload["name"] as? String) ?? (profile?["name"] as? String)
+            name: (payload["name"] as? String) ?? (profile?["name"] as? String),
+            spaceID: firstNonEmptyString([
+                organization?["id"],
+                organization?["organization_id"],
+                organization?["workspace_id"]
+            ]),
+            spaceName: firstNonEmptyString([
+                organization?["title"],
+                organization?["name"],
+                organization?["display_name"],
+                organization?["workspace_name"]
+            ])
         )
     }
 
@@ -261,6 +305,12 @@ public enum CodexAppAuthStore {
         let lhsIdentity = identity(from: lhs.idToken)
         let rhsIdentity = identity(from: rhs.idToken)
 
+        if let lhsSpace = spaceIdentityKey(for: lhsIdentity),
+           let rhsSpace = spaceIdentityKey(for: rhsIdentity),
+           lhsSpace != rhsSpace {
+            return false
+        }
+
         if let lhsSubject = nonEmpty(lhsIdentity?.subject),
            let rhsSubject = nonEmpty(rhsIdentity?.subject) {
             return lhsSubject == rhsSubject
@@ -286,8 +336,67 @@ public enum CodexAppAuthStore {
             session.accountID,
             nonEmpty(tokenIdentity?.subject) ?? "",
             nonEmpty(tokenIdentity?.email)?.lowercased() ?? "",
-            nonEmpty(tokenIdentity?.name)?.lowercased() ?? ""
+            nonEmpty(tokenIdentity?.name)?.lowercased() ?? "",
+            nonEmpty(tokenIdentity?.spaceID)?.lowercased() ?? "",
+            nonEmpty(tokenIdentity?.spaceName)?.lowercased() ?? ""
         ].joined(separator: "|")
+    }
+
+    private static func selectedOrganization(from auth: [String: Any]?) -> [String: Any]? {
+        guard let auth,
+              let organizations = auth["organizations"] as? [[String: Any]],
+              !organizations.isEmpty else {
+            return nil
+        }
+
+        if let selectedID = firstNonEmptyString([
+            auth["current_organization_id"],
+            auth["default_organization_id"],
+            auth["organization_id"],
+            auth["workspace_id"]
+        ]),
+            let selected = organizations.first(where: {
+                selectedID == firstNonEmptyString([$0["id"], $0["organization_id"], $0["workspace_id"]])
+            }) {
+            return selected
+        }
+
+        return organizations.first(where: { boolValue($0["is_default"]) }) ??
+            organizations.first(where: { boolValue($0["is_personal"]) }) ??
+            organizations.first
+    }
+
+    private static func spaceIdentityKey(for identity: CodexTokenIdentity?) -> String? {
+        if let spaceID = nonEmpty(identity?.spaceID)?.lowercased() {
+            return "id:\(spaceID)"
+        }
+
+        if let spaceName = nonEmpty(identity?.spaceName)?.lowercased() {
+            return "name:\(spaceName)"
+        }
+
+        return nil
+    }
+
+    private static func firstNonEmptyString(_ values: [Any?]) -> String? {
+        values.lazy
+            .compactMap { $0 as? String }
+            .compactMap(nonEmpty)
+            .first
+    }
+
+    private static func boolValue(_ value: Any?) -> Bool {
+        switch value {
+        case let bool as Bool:
+            return bool
+        case let number as NSNumber:
+            return number.boolValue
+        case let string as String:
+            let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized == "true" || normalized == "1" || normalized == "yes"
+        default:
+            return false
+        }
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

@@ -175,6 +175,7 @@ public struct AgentAccountStatus: Identifiable, Equatable, Sendable {
 public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
     public let provider: AgentProviderKind
     public let accountLabel: String
+    public let spaceLabel: String?
     public let planType: String?
     public let modelName: String?
     public let sourceSummary: String
@@ -184,6 +185,7 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
     public init(
         provider: AgentProviderKind,
         accountLabel: String,
+        spaceLabel: String? = nil,
         planType: String?,
         modelName: String?,
         sourceSummary: String,
@@ -192,6 +194,7 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
     ) {
         self.provider = provider
         self.accountLabel = accountLabel
+        self.spaceLabel = spaceLabel
         self.planType = planType
         self.modelName = modelName
         self.sourceSummary = sourceSummary

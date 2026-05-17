@@ -246,9 +246,11 @@ struct MenuBarView: View {
                     .truncationMode(.tail)
                     .layoutPriority(1)
 
-                Text(status.provider.title)
+                Text(accountContextLabel(for: status, snapshot: snapshot))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(statusTint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
 
             Spacer()
@@ -319,6 +321,27 @@ struct MenuBarView: View {
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
         quotaTint(for: metric.remainingPercent)
+    }
+
+    private func accountContextLabel(
+        for status: AgentAccountStatus,
+        snapshot: AgentQuotaSnapshot?
+    ) -> String {
+        guard status.provider == .codex,
+              let spaceLabel = trimmedSpaceLabel(snapshot?.spaceLabel) else {
+            return status.provider.title
+        }
+
+        return "\(status.provider.title): \(spaceLabel)"
+    }
+
+    private func trimmedSpaceLabel(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
     }
 
     private func panelTint(

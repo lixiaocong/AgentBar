@@ -16,12 +16,25 @@ struct AgentBarWidgetEntry: TimelineEntry {
 
 private enum AgentBarWidgetAccountValue {
     /// Returns a human-friendly display name for the Edit Widget picker.
-    /// Format: "Provider: account" or just "Provider" if no account label.
+    /// Format: "Provider: account (space)" or just "Provider" if no account label.
     static func widgetValue(for state: AgentWidgetProviderState) -> String {
-        if let label = state.displayLabel {
-            return "\(state.provider.title): \(label)"
+        if let accountLabel = accountSubtitle(for: state) {
+            return "\(state.provider.title): \(accountLabel)"
         }
         return state.provider.title
+    }
+
+    static func accountSubtitle(for state: AgentWidgetProviderState) -> String? {
+        guard let label = state.displayLabel else {
+            return nil
+        }
+
+        guard state.provider == .codex,
+              let spaceLabel = trimmedSpaceLabel(state.snapshot?.spaceLabel) else {
+            return label
+        }
+
+        return "\(label) (\(spaceLabel))"
     }
 
     /// Resolves a friendly display name back to the internal provider ID.
@@ -47,6 +60,15 @@ private enum AgentBarWidgetAccountValue {
         }
 
         return nil
+    }
+
+    private static func trimmedSpaceLabel(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
     }
 }
 
@@ -246,7 +268,7 @@ struct AgentBarDesktopWidgetView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
 
-            if let accountLabel = state.displayLabel {
+            if let accountLabel = AgentBarWidgetAccountValue.accountSubtitle(for: state) {
                 Text(accountLabel)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(palette.secondaryText)
@@ -419,6 +441,7 @@ private extension AgentWidgetState {
                 snapshot: AgentQuotaSnapshot(
                     provider: .codex,
                     accountLabel: "dev@example.com",
+                    spaceLabel: "Personal Pro",
                     planType: "Pro",
                     modelName: nil,
                     sourceSummary: "Preview",
