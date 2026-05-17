@@ -296,15 +296,18 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private func quotaBlock(metric: AgentQuotaMetric) -> some View {
+        let tint = quotaTint(for: metric)
+
         VStack(alignment: .leading, spacing: 6) {
             Text(metric.title)
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
 
-            ProgressView(value: metric.remainingPercent, total: 100)
-                .tint(quotaTint(for: metric))
+            quotaBar(value: metric.remainingPercent, tint: tint)
 
             HStack {
                 Text(metric.remainingLabel)
+                    .foregroundStyle(tint)
                 Spacer()
                 Text(metric.usedLabel)
             }
@@ -317,6 +320,22 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func quotaBar(value: Double, tint: Color) -> some View {
+        let progress = min(max(value, 0), 100) / 100
+
+        return GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.20))
+
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(3, proxy.size.width * progress))
+            }
+        }
+        .frame(height: 6)
     }
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
