@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_NAME="AgentBar"
+WIDGET_EXTENSION_NAME="${APP_NAME}WidgetExtension"
 BUILD_DIR="$PROJECT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 INSTALL_PATH="/Applications/$APP_NAME.app"
@@ -121,6 +122,12 @@ touch "$APP_BUNDLE"
 if pgrep -f "$INSTALL_PATH/Contents/MacOS/$APP_NAME" >/dev/null 2>&1; then
     echo "==> Stopping installed app"
     pkill -f "$INSTALL_PATH/Contents/MacOS/$APP_NAME" || true
+    sleep 1
+fi
+
+if pgrep -x "$WIDGET_EXTENSION_NAME" >/dev/null 2>&1; then
+    echo "==> Stopping installed widget extension"
+    pkill -x "$WIDGET_EXTENSION_NAME" || true
     sleep 1
 fi
 

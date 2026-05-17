@@ -221,7 +221,6 @@ struct AgentBarDesktopWidgetView: View {
 
     @ViewBuilder
     private func providerContent(_ state: AgentWidgetProviderState) -> some View {
-        let providerPalette = tint(for: state.provider)
         let metrics = displayMetrics(for: state)
 
         VStack(alignment: .leading, spacing: 8) {
@@ -235,7 +234,7 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 0)
             } else if !metrics.isEmpty {
                 ForEach(metrics.prefix(3)) { metric in
-                    metricCard(metric, tint: providerPalette)
+                    metricCard(metric)
                 }
             } else if let snapshot = state.snapshot {
                 HStack(spacing: 8) {
@@ -278,8 +277,10 @@ struct AgentBarDesktopWidgetView: View {
         }
     }
 
-    private func metricCard(_ metric: AgentQuotaMetric, tint: Color) -> some View {
-        HStack(spacing: 8) {
+    private func metricCard(_ metric: AgentQuotaMetric) -> some View {
+        let tint = quotaTint(for: metric)
+
+        return HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(metric.title)
                     .font(.caption2.weight(.semibold))
@@ -287,13 +288,13 @@ struct AgentBarDesktopWidgetView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
 
-                ProgressView(value: metric.remainingPercent, total: 100)
-                    .tint(tint)
+                quotaBar(value: metric.remainingPercent, tint: tint)
             }
 
             Text(metric.remainingLabel)
                 .font(.system(.caption, design: .rounded).weight(.bold))
                 .monospacedDigit()
+                .foregroundStyle(tint)
                 .lineLimit(1)
                 .fixedSize()
         }
@@ -304,6 +305,22 @@ struct AgentBarDesktopWidgetView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(tint.opacity(colorScheme == .dark ? 0.18 : 0.10))
         )
+    }
+
+    private func quotaBar(value: Double, tint: Color) -> some View {
+        let progress = min(max(value, 0), 100) / 100
+
+        return GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(palette.track)
+
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(3, proxy.size.width * progress))
+            }
+        }
+        .frame(height: 6)
     }
 
     private func detailPill(label: String, value: String) -> some View {
@@ -365,16 +382,20 @@ struct AgentBarDesktopWidgetView: View {
         metric.id == "window-10080" || metric.title.localizedCaseInsensitiveContains("7 day")
     }
 
-    private func tint(for provider: AgentProviderKind) -> Color {
-        switch provider {
-        case .codex:
-            Color(red: 0.11, green: 0.42, blue: 0.87)
-        case .githubCopilot:
-            Color(red: 0.08, green: 0.54, blue: 0.39)
-        case .gemini:
-            Color(red: 0.94, green: 0.52, blue: 0.10)
-        case .claude:
-            Color(red: 0.55, green: 0.35, blue: 0.24)
+    private func quotaTint(for metric: AgentQuotaMetric) -> Color {
+        quotaTint(for: metric.remainingPercent)
+    }
+
+    private func quotaTint(for remainingPercent: Double) -> Color {
+        switch remainingPercent {
+        case 75...:
+            return .green
+        case 45..<75:
+            return .yellow
+        case 20..<45:
+            return .orange
+        default:
+            return .red
         }
     }
 
@@ -408,6 +429,7 @@ private struct WidgetPalette {
     let pillBackground: Color
     let primaryText: Color
     let secondaryText: Color
+    let track: Color
 
     init(colorScheme: ColorScheme) {
         if colorScheme == .dark {
@@ -416,12 +438,14 @@ private struct WidgetPalette {
             pillBackground = Color.white.opacity(0.12)
             primaryText = Color.white.opacity(0.98)
             secondaryText = Color.white.opacity(0.72)
+            track = Color.white.opacity(0.22)
         } else {
             backgroundTop = Color(red: 0.985, green: 0.988, blue: 0.995)
             backgroundBottom = Color(red: 0.945, green: 0.956, blue: 0.976)
             pillBackground = Color.white.opacity(0.92)
             primaryText = Color(red: 0.10, green: 0.16, blue: 0.23)
             secondaryText = Color(red: 0.31, green: 0.39, blue: 0.49)
+            track = Color.black.opacity(0.22)
         }
     }
 }
