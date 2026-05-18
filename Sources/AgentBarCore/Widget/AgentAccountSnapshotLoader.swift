@@ -17,6 +17,10 @@ public enum AgentAccountSnapshotLoader {
             return ClaudeQuotaService(
                 installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
             ).isAvailable
+        case .junie:
+            return JunieQuotaService(
+                installation: junieInstallation(for: account)
+            ).isAvailable
         }
     }
 
@@ -37,6 +41,10 @@ public enum AgentAccountSnapshotLoader {
         case .claude:
             return try await ClaudeQuotaService(
                 installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
+            ).loadSnapshot()
+        case .junie:
+            return try await JunieQuotaService(
+                installation: junieInstallation(for: account)
             ).loadSnapshot()
         }
     }
@@ -72,6 +80,17 @@ public enum AgentAccountSnapshotLoader {
             configDirectory: account.directory.url,
             executableLocations: GeminiCLIInstallation.defaultExecutableLocations
         )
+    }
+
+    private static func junieInstallation(for account: ConfiguredAgentAccount) -> JunieInstallation {
+        if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: .junie
+        ) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return JunieInstallation(configDirectory: account.directory.url)
     }
 }
 

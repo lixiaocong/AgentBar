@@ -20,14 +20,16 @@ func appModelDefaultsToTwoMenuBarAccountsAndTenSecondRefresh() {
     addAppManagedAccount(to: model, provider: .githubCopilot, accountID: "copilot-format")
     addAppManagedAccount(to: model, provider: .gemini, accountID: "gemini-format")
     addAppManagedAccount(to: model, provider: .claude, accountID: "claude-format")
+    addAppManagedAccount(to: model, provider: .junie, accountID: "junie-format")
     model.codexSnapshot = makeSnapshot(provider: .codex, usedPercent: 66, remainingLabel: "34% left")
     model.copilotSnapshot = makeSnapshot(provider: .githubCopilot, usedPercent: 23, remainingLabel: "231 left")
     model.geminiSnapshot = makeSnapshot(provider: .gemini, usedPercent: 0, remainingLabel: "100% left")
     model.claudeSnapshot = makeSnapshot(provider: .claude, usedPercent: 12, remainingLabel: "88% left")
+    model.junieSnapshot = makeSnapshot(provider: .junie, usedPercent: 5, remainingLabel: "95% left")
 
     #expect(model.menuBarMaxDisplayedAccounts == 2)
     #expect(model.refreshIntervalSeconds == 10)
-    #expect(model.menuBarTitle == "Codex 34%  Copilot 77%  Gemini 100%  Claude 88%")
+    #expect(model.menuBarTitle == "Codex 34%  Copilot 77%  Gemini 100%  Claude 88%  Junie 95%")
     #expect(
         model.statusIconQuotaBars == [
             MenuBarStatusImage.Bar(provider: .codex, label: "cx", remainingPercent: 34),
@@ -172,6 +174,7 @@ func appModelDefaultsConfiguredDirectoriesToStandardLocations() {
     #expect(model.configuredAccounts(for: .githubCopilot) == [])
     #expect(model.configuredAccounts(for: .gemini) == [])
     #expect(model.configuredAccounts(for: .claude) == [])
+    #expect(model.configuredAccounts(for: .junie) == [])
 }
 
 @Test
@@ -279,6 +282,12 @@ func appModelRejectsLocalAgentDirectories() {
         model.addConfiguredAccountDirectory(
             path: "/tmp/agent-bar-tests/.gemini/",
             for: .gemini
+        ) == .browserLoginRequired
+    )
+    #expect(
+        model.addConfiguredAccountDirectory(
+            path: "/tmp/agent-bar-tests/.junie/",
+            for: .junie
         ) == .browserLoginRequired
     )
 }

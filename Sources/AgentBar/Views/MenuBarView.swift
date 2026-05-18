@@ -11,7 +11,7 @@ struct MenuBarView: View {
     let onPreferredSizeChange: @MainActor (CGSize) -> Void
 
     static let minimumContentSize = CGSize(width: 280, height: 180)
-    private let providerColumnWidth: CGFloat = 240
+    private let providerColumnWidth: CGFloat = 264
 
     init(
         model: AppModel,
@@ -207,7 +207,7 @@ struct MenuBarView: View {
                 }
 
                 if snapshot.metrics.isEmpty {
-                    Text("Local auth detected, but no quota metrics are available.")
+                    Text(snapshot.sourceSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -246,11 +246,13 @@ struct MenuBarView: View {
                     .truncationMode(.tail)
                     .layoutPriority(1)
 
-                Text(accountContextLabel(for: status, snapshot: snapshot))
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(statusTint)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                if let contextLabel = accountContextLabel(snapshot: snapshot) {
+                    Text(contextLabel)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(statusTint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
 
             Spacer()
@@ -342,16 +344,9 @@ struct MenuBarView: View {
         quotaTint(for: metric.remainingPercent)
     }
 
-    private func accountContextLabel(
-        for status: AgentAccountStatus,
-        snapshot: AgentQuotaSnapshot?
-    ) -> String {
-        guard status.provider == .codex,
-              let spaceLabel = trimmedSpaceLabel(snapshot?.spaceLabel) else {
-            return status.provider.title
-        }
-
-        return "\(status.provider.title): \(spaceLabel)"
+    private func accountContextLabel(snapshot: AgentQuotaSnapshot?) -> String? {
+        trimmedSpaceLabel(snapshot?.spaceLabel) ??
+            trimmedSpaceLabel(snapshot?.planType)
     }
 
     private func trimmedSpaceLabel(_ value: String?) -> String? {
@@ -380,16 +375,7 @@ struct MenuBarView: View {
     }
 
     private func quotaTint(for remainingPercent: Double) -> Color {
-        switch remainingPercent {
-        case 75...:
-            return .green
-        case 45..<75:
-            return .yellow
-        case 20..<45:
-            return .orange
-        default:
-            return .red
-        }
+        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
     }
 
     private var controls: some View {
@@ -424,6 +410,8 @@ struct MenuBarView: View {
             return ("GOOGLE", "Gemini", .orange)
         case .claude:
             return ("ANTHROPIC", "Claude", .brown)
+        case .junie:
+            return ("JETBRAINS", "Junie", .pink)
         }
     }
 
@@ -431,6 +419,12 @@ struct MenuBarView: View {
         GeometryReader { proxy in
             Color.clear.preference(key: MenuBarContentSizePreferenceKey.self, value: proxy.size)
         }
+    }
+}
+
+private extension Color {
+    init(agentQuotaRGB rgb: AgentQuotaDisplayRGB) {
+        self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }
 

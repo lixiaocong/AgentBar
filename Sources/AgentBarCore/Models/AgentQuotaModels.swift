@@ -5,6 +5,7 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
     case githubCopilot
     case gemini
     case claude
+    case junie
 
     public var id: String { rawValue }
 
@@ -16,6 +17,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return .gemini
         case AgentProviderKind.claude.rawValue:
             return .claude
+        case AgentProviderKind.junie.rawValue:
+            return .junie
         case AgentProviderKind.codex.rawValue, "codexCloudAPI", "localCodex", "openAIAdminAPI":
             return .codex
         default:
@@ -33,6 +36,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "Gemini"
         case .claude:
             return "Claude"
+        case .junie:
+            return "Junie"
         }
     }
 
@@ -46,6 +51,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "Tracks per-model request quota for Gemini Code Assist (shared with Antigravity IDE)."
         case .claude:
             return "Detects the local Claude Code account from auth.json. Quota windows are not exposed by AgentBar yet."
+        case .junie:
+            return "Tracks the Junie by JetBrains account linked with an AgentBar-owned Junie API token."
         }
     }
 
@@ -59,6 +66,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "Gemini"
         case .claude:
             return "Claude"
+        case .junie:
+            return "Junie"
         }
     }
 
@@ -72,6 +81,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "G"
         case .claude:
             return "Cl"
+        case .junie:
+            return "J"
         }
     }
 
@@ -85,6 +96,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return .seconds(30)
         case .claude:
             return .seconds(30)
+        case .junie:
+            return .seconds(60)
         }
     }
 }
@@ -94,16 +107,18 @@ public struct AgentProviderAvailability: Sendable, Equatable {
     public var githubCopilot: Bool
     public var gemini: Bool
     public var claude: Bool
+    public var junie: Bool
 
-    public init(codex: Bool, githubCopilot: Bool, gemini: Bool, claude: Bool) {
+    public init(codex: Bool, githubCopilot: Bool, gemini: Bool, claude: Bool, junie: Bool = false) {
         self.codex = codex
         self.githubCopilot = githubCopilot
         self.gemini = gemini
         self.claude = claude
+        self.junie = junie
     }
 
-    public static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false)
-    public static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true)
+    public static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false, junie: false)
+    public static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true, junie: true)
 
     public var availableProviders: [AgentProviderKind] {
         AgentProviderKind.allCases.filter(isAvailable)
@@ -119,6 +134,8 @@ public struct AgentProviderAvailability: Sendable, Equatable {
             return gemini
         case .claude:
             return claude
+        case .junie:
+            return junie
         }
     }
 }

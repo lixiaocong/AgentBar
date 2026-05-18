@@ -174,7 +174,7 @@ struct AgentBarDesktopWidget: Widget {
             AgentBarDesktopWidgetView(entry: entry)
         }
         .configurationDisplayName("Agent Bar")
-        .description("See one Codex, Copilot, Gemini, or Claude account on your desktop.")
+        .description("See one Codex, Copilot, Gemini, Claude, or Junie account on your desktop.")
         .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }
@@ -238,7 +238,9 @@ struct AgentBarDesktopWidgetView: View {
                 }
             } else if let snapshot = state.snapshot {
                 HStack(spacing: 8) {
-                    detailPill(label: "Plan", value: snapshot.planType ?? "Active")
+                    if let context = snapshotContext(for: state, snapshot: snapshot) {
+                        detailPill(label: context.label, value: context.value)
+                    }
                     detailPill(label: "Updated", value: snapshot.updatedAt.formatted(date: .omitted, time: .shortened))
                 }
                 Spacer(minLength: 0)
@@ -336,6 +338,31 @@ struct AgentBarDesktopWidgetView: View {
         .background(palette.pillBackground, in: Capsule())
     }
 
+    private func snapshotContext(
+        for state: AgentWidgetProviderState,
+        snapshot: AgentQuotaSnapshot
+    ) -> (label: String, value: String)? {
+        if state.provider == .codex,
+           let workspace = trimmedDetailValue(snapshot.spaceLabel) {
+            return ("Workspace", workspace)
+        }
+
+        if let plan = trimmedDetailValue(snapshot.planType) {
+            return ("Plan", plan)
+        }
+
+        return ("Status", "Active")
+    }
+
+    private func trimmedDetailValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
+    }
+
     private func emptyState(title: String, message: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
@@ -387,16 +414,7 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func quotaTint(for remainingPercent: Double) -> Color {
-        switch remainingPercent {
-        case 75...:
-            return .green
-        case 45..<75:
-            return .yellow
-        case 20..<45:
-            return .orange
-        default:
-            return .red
-        }
+        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
     }
 
     private var widgetBackground: some View {
@@ -420,6 +438,12 @@ struct AgentBarDesktopWidgetView: View {
 
     private var palette: WidgetPalette {
         WidgetPalette(colorScheme: colorScheme)
+    }
+}
+
+private extension Color {
+    init(agentQuotaRGB rgb: AgentQuotaDisplayRGB) {
+        self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }
 
@@ -542,6 +566,30 @@ private extension AgentWidgetState {
                     modelName: nil,
                     sourceSummary: "Preview",
                     metrics: [],
+                    updatedAt: Date(timeIntervalSince1970: 1_776_240_000)
+                ),
+                errorMessage: nil,
+                isAvailable: true
+            ),
+            AgentWidgetProviderState(
+                id: "preview-junie",
+                provider: .junie,
+                snapshot: AgentQuotaSnapshot(
+                    provider: .junie,
+                    accountLabel: "JetBrains Account",
+                    planType: "Junie API Key · $120 / $200 left",
+                    modelName: nil,
+                    sourceSummary: "Active · $120 / $200 left",
+                    metrics: [
+                        AgentQuotaMetric(
+                            id: "preview-junie-quota",
+                            title: "Subscription quota",
+                            usedPercent: 40,
+                            usedLabel: "$80 used",
+                            remainingLabel: "$120 / $200 left",
+                            resetsAt: nil
+                        ),
+                    ],
                     updatedAt: Date(timeIntervalSince1970: 1_776_240_000)
                 ),
                 errorMessage: nil,

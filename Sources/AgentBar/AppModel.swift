@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import os
 
@@ -101,6 +102,11 @@ final class AppModel {
         set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .claude) }
     }
 
+    var junieSnapshot: AgentQuotaSnapshot? {
+        get { summarySnapshot(for: .junie) }
+        set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .junie) }
+    }
+
     var codexError: String? {
         get { summaryError(for: .codex) }
         set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .codex) }
@@ -119,6 +125,11 @@ final class AppModel {
     var claudeError: String? {
         get { summaryError(for: .claude) }
         set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .claude) }
+    }
+
+    var junieError: String? {
+        get { summaryError(for: .junie) }
+        set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .junie) }
     }
 
     init(
@@ -247,6 +258,10 @@ final class AppModel {
         usedPercent(for: .claude)
     }
 
+    var junieUsedPercent: Double? {
+        usedPercent(for: .junie)
+    }
+
     func configuredAccounts(for provider: AgentProviderKind) -> [ConfiguredAccountDirectory] {
         configuredDirectoriesByProvider[provider] ?? []
     }
@@ -361,6 +376,59 @@ final class AppModel {
         _ = addConfiguredAccountDirectory(path: directoryURL.path, for: provider)
     }
 
+    @discardableResult
+    func addJunieAPIToken(_ rawToken: String) -> AddJunieAPITokenResult {
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            return .emptyToken
+        }
+
+        let accountID = Self.stableJunieAccountID(for: token)
+        let directoryURL = AgentProviderAppAuthStore.accountDirectory(
+            for: .junie,
+            accountID: accountID
+        )
+        let directory = ConfiguredAccountDirectory(path: directoryURL.path)
+        guard !configuredAccounts(for: .junie).contains(directory) else {
+            return .duplicate
+        }
+
+        do {
+            let session = AgentProviderStoredAuthSession(
+                provider: .junie,
+                accountID: accountID,
+                accountLabel: "Junie API Key",
+                accessToken: token,
+                refreshToken: nil,
+                expiryDate: nil,
+                scopes: ["junie"],
+                lastRefresh: Date()
+            )
+            try AgentProviderAppAuthStore.save(session: session)
+            try AgentProviderAppAuthStore.ensureAccountDirectoryExists(
+                for: .junie,
+                accountID: accountID
+            )
+            let result = addConfiguredAccountDirectory(path: directoryURL.path, for: .junie)
+            switch result {
+            case .added:
+                persistStoredAccountLabelIfNeeded(
+                    for: ConfiguredAgentAccount(provider: .junie, directory: directory),
+                    accountLabel: session.accountLabel
+                )
+                return .added
+            case .duplicate:
+                return .duplicate
+            case .emptyPath, .browserLoginRequired:
+                return .saveFailed("Junie token was saved, but AgentBar could not save the account reference.")
+            case .credentialsFileMissing(let path):
+                return .saveFailed("Junie token was saved, but AgentBar could not find the saved account at \(path).")
+            }
+        } catch {
+            return .saveFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
     func removeConfiguredAccount(_ account: ConfiguredAgentAccount) {
         if account.provider == .codex,
            let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url) {
@@ -439,14 +507,21 @@ final class AppModel {
         switch provider {
         case .codex, .githubCopilot, .gemini:
             return true
-        case .claude:
+        case .claude, .junie:
             return false
         }
     }
 
     func signInWithBrowser(for provider: AgentProviderKind, forceAccountSelection: Bool = false) {
         guard supportsBrowserSignIn(for: provider) else {
-            providerLoginErrors[provider] = "Claude accounts are read from Claude Code auth.json. Add a directory containing auth.json instead of browser sign-in."
+            switch provider {
+            case .claude:
+                providerLoginErrors[provider] = "Claude accounts are read from Claude Code auth.json. Add a directory containing auth.json instead of browser sign-in."
+            case .junie:
+                providerLoginErrors[provider] = "Junie accounts must be added with a Junie API token from AgentBar settings."
+            case .codex, .githubCopilot, .gemini:
+                break
+            }
             return
         }
 
@@ -477,7 +552,7 @@ final class AppModel {
                     }
                 case .gemini:
                     session = try await GeminiBrowserLoginService().signIn(forceAccountSelection: forceAccountSelection)
-                case .codex, .claude:
+                case .codex, .claude, .junie:
                     return
                 }
 
@@ -503,7 +578,12 @@ final class AppModel {
                     providerLoginMessages[provider] = nil
                     break
                 case .duplicate:
-                    providerLoginErrors[provider] = "That \(provider.title) account is already signed in. Choose a different account in the browser and try again."
+                    if provider == .gemini {
+                        providerLoginErrors[provider] = nil
+                        providerLoginMessages[provider] = "Gemini credentials refreshed for the existing account."
+                    } else {
+                        providerLoginErrors[provider] = "That \(provider.title) account is already signed in. Choose a different account in the browser and try again."
+                    }
                     refreshProviderAvailability()
                     refreshNow()
                 case .emptyPath, .browserLoginRequired:
@@ -690,7 +770,8 @@ final class AppModel {
             codex: hasAvailableAccount(for: .codex),
             githubCopilot: hasAvailableAccount(for: .githubCopilot),
             gemini: hasAvailableAccount(for: .gemini),
-            claude: hasAvailableAccount(for: .claude)
+            claude: hasAvailableAccount(for: .claude),
+            junie: hasAvailableAccount(for: .junie)
         )
     }
 
@@ -866,6 +947,9 @@ final class AppModel {
                         for: result.account
                     )
                     startCodexReconnect(for: result.account, automatic: true)
+                } else if result.account.provider == .gemini,
+                          isInvalidGeminiLogin(error) {
+                    removeInvalidGeminiAccount(result.account)
                 } else {
                     setAccountState(snapshot: nil, error: message, for: result.account)
                 }
@@ -886,6 +970,25 @@ final class AppModel {
         return message.localizedCaseInsensitiveContains("token_revoked") ||
             message.localizedCaseInsensitiveContains("token_invalidated") ||
             message.localizedCaseInsensitiveContains("invalidated oauth token")
+    }
+
+    private func isInvalidGeminiLogin(_ error: Error) -> Bool {
+        if let geminiError = error as? GeminiQuotaError {
+            return geminiError.invalidatesStoredLogin
+        }
+
+        let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        return message.localizedCaseInsensitiveContains("invalid_grant")
+            || message.localizedCaseInsensitiveContains("invalid_token")
+            || message.localizedCaseInsensitiveContains("refresh token")
+    }
+
+    private func removeInvalidGeminiAccount(_ account: ConfiguredAgentAccount) {
+        let message = "Stored Gemini login expired and was removed locally. Sign in again from AgentBar settings."
+        setAccountState(snapshot: nil, error: message, for: account)
+        providerLoginMessages[.gemini] = nil
+        providerLoginErrors[.gemini] = message
+        removeConfiguredAccount(account)
     }
 
     private func startCodexReconnect(for account: ConfiguredAgentAccount, automatic: Bool) {
@@ -1113,6 +1216,8 @@ final class AppModel {
             return "gm"
         case .claude:
             return "cl"
+        case .junie:
+            return "jn"
         }
     }
 
@@ -1164,7 +1269,7 @@ final class AppModel {
                 .filter(CodexAppAuthStore.isAppManagedAccountDirectory)
         }
 
-        if provider == .githubCopilot || provider == .gemini {
+        if provider == .githubCopilot || provider == .gemini || provider == .junie {
             return ConfiguredAccountDirectory
                 .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
                 .filter { AgentProviderAppAuthStore.isAppManagedAccountDirectory($0, provider: provider) }
@@ -1218,6 +1323,14 @@ final class AppModel {
         }
     }
 
+    private static func stableJunieAccountID(for token: String) -> String {
+        let digest = SHA256.hash(data: Data(token.utf8))
+        let prefix = digest.prefix(16).map { byte in
+            String(format: "%02x", byte)
+        }.joined()
+        return "junie-\(prefix)"
+    }
+
     private func persistWidgetState() {
         do {
             try AgentWidgetStateStore().save(currentWidgetState())
@@ -1257,6 +1370,13 @@ final class AppModel {
         case duplicate
         case browserLoginRequired
         case credentialsFileMissing(String)
+    }
+
+    enum AddJunieAPITokenResult: Equatable {
+        case added
+        case emptyToken
+        case duplicate
+        case saveFailed(String)
     }
 
     private struct AccountRefreshResult {

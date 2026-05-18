@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 #if canImport(AgentBarCore)
@@ -10,6 +11,7 @@ struct SettingsView: View {
         GridItem(.adaptive(minimum: 260), alignment: .top)
     ]
     @State private var addAccountProvider: AgentProviderKind?
+    @State private var isAddingJunieToken = false
 
     var body: some View {
         @Bindable var model = model
@@ -61,6 +63,9 @@ struct SettingsView: View {
         .sheet(item: $addAccountProvider) { provider in
             AddAccountSheet(provider: provider, model: model)
         }
+        .sheet(isPresented: $isAddingJunieToken) {
+            AddJunieTokenSheet(model: model)
+        }
     }
 
     @ViewBuilder
@@ -98,6 +103,10 @@ struct SettingsView: View {
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                } else if provider == .junie {
+                    Button(hasConfiguredAccounts ? "Add Another Junie Token..." : "Add Junie Token...") {
+                        isAddingJunieToken = true
+                    }
                 } else if provider == .claude {
                     Button(hasConfiguredAccounts ? "Add Another Auth Directory..." : "Add Claude Auth Directory...") {
                         addAccountProvider = provider
@@ -121,8 +130,8 @@ struct SettingsView: View {
             }
 
             if let snapshot = status.snapshot {
-                if let plan = snapshot.planType {
-                    LabeledContent("Plan", value: plan)
+                if let context = accountContext(for: status, snapshot: snapshot) {
+                    LabeledContent(context.label, value: context.value)
                         .font(.caption)
                 }
             } else if let error = status.errorMessage {
@@ -167,6 +176,31 @@ struct SettingsView: View {
         }
     }
 
+    private func accountContext(
+        for status: AgentAccountStatus,
+        snapshot: AgentQuotaSnapshot
+    ) -> (label: String, value: String)? {
+        if status.provider == .codex,
+           let workspace = trimmedSettingValue(snapshot.spaceLabel) {
+            return ("Workspace", workspace)
+        }
+
+        if let plan = trimmedSettingValue(snapshot.planType) {
+            return ("Plan", plan)
+        }
+
+        return nil
+    }
+
+    private func trimmedSettingValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
+    }
+
     private func groupTitle(for provider: AgentProviderKind) -> String {
         switch provider {
         case .codex:
@@ -177,6 +211,8 @@ struct SettingsView: View {
             return "Gemini Code Assist"
         case .claude:
             return "Claude Code"
+        case .junie:
+            return "Junie"
         }
     }
 
@@ -263,6 +299,76 @@ private struct AddAccountSheet: View {
             errorMessage = "\(provider.title) accounts must be added with browser sign-in."
         case .credentialsFileMissing(let path):
             errorMessage = "No credentials file found at \(path)."
+        }
+    }
+}
+
+private struct AddJunieTokenSheet: View {
+    let model: AppModel
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var token = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Junie Account")
+                .font(.title3.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Junie API token")
+                    .font(.caption.weight(.semibold))
+
+                SecureField(
+                    "",
+                    text: $token,
+                    prompt: Text("perm-...")
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                Button("Open Token Page") {
+                    NSWorkspace.shared.open(URL(string: "https://junie.jetbrains.com/cli")!)
+                }
+
+                Spacer()
+
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+
+                Button("Add") {
+                    submit()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+    }
+
+    private func submit() {
+        switch model.addJunieAPIToken(token) {
+        case .added:
+            dismiss()
+        case .emptyToken:
+            errorMessage = "Enter a Junie API token."
+        case .duplicate:
+            errorMessage = "That Junie account is already configured."
+        case .saveFailed(let message):
+            errorMessage = message
         }
     }
 }

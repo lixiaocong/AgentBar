@@ -26,14 +26,13 @@ func decodesCodexCloudUsagePayload() throws {
     let snapshot = try CodexQuotaService().decodeSnapshot(
         from: Data(payload.utf8),
         accountLabel: "Account test",
-        spaceLabel: "Personal",
-        businessWorkspaceLabel: "NewsBreak",
+        spaceLabel: "Newsbreak-BJ",
         updatedAt: updatedAt
     )
 
     #expect(snapshot.provider == .codex)
     #expect(snapshot.accountLabel == "Account test")
-    #expect(snapshot.spaceLabel == "NewsBreak Business")
+    #expect(snapshot.spaceLabel == "Newsbreak-BJ · Team")
     #expect(snapshot.planType == "team")
     #expect(snapshot.sourceSummary == "ChatGPT Codex API")
     #expect(snapshot.updatedAt == updatedAt)
@@ -42,6 +41,85 @@ func decodesCodexCloudUsagePayload() throws {
     #expect(snapshot.metrics.first?.usedPercent == 40)
     #expect(snapshot.metrics.last?.title == "7 day window")
     #expect(snapshot.metrics.last?.usedPercent == 34)
+}
+
+@Test
+func codexBusinessPlanDoesNotInventWorkspaceFromPersonalTokenLabel() throws {
+    let payload = """
+    {
+      "plan_type": "team",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 40,
+          "limit_window_seconds": 18000,
+          "reset_at": 1775658567
+        }
+      }
+    }
+    """
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "xiaocong.li@newsbreak.com",
+        spaceLabel: "Personal",
+        updatedAt: Date(timeIntervalSince1970: 1775600000)
+    )
+
+    #expect(snapshot.spaceLabel == "Team")
+    #expect(snapshot.planType == "team")
+}
+
+@Test
+func codexBusinessPlanUsesPublicWorkspaceDiscoveryTokenLabel() throws {
+    let payload = """
+    {
+      "plan_type": "team",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 40,
+          "limit_window_seconds": 18000,
+          "reset_at": 1775658567
+        }
+      }
+    }
+    """
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "xiaocong.li@newsbreak.com",
+        spaceLabel: "newsbreak.com Workspace #43791",
+        updatedAt: Date(timeIntervalSince1970: 1775600000)
+    )
+
+    #expect(snapshot.spaceLabel == "newsbreak.com · Team")
+    #expect(snapshot.planType == "team")
+}
+
+@Test
+func codexDecodesWorkspaceDisplayNameFromAccountSettings() throws {
+    let payload = """
+    {
+      "workspace_id": "account-work",
+      "public_display_name": "newsbreak.com Workspace #43791",
+      "workspace_name": "Newsbreak-BJ"
+    }
+    """
+
+    let displayName = try CodexQuotaService().decodeWorkspaceDisplayName(from: Data(payload.utf8))
+    #expect(displayName == "Newsbreak-BJ")
+}
+
+@Test
+func codexUsesPublicWorkspaceDiscoveryNameWhenPrivateNameUnavailable() throws {
+    let payload = """
+    {
+      "workspace_id": "account-work",
+      "public_display_name": "newsbreak.com Workspace #43791"
+    }
+    """
+
+    let displayName = try CodexQuotaService().decodeWorkspaceDisplayName(from: Data(payload.utf8))
+    #expect(displayName == "newsbreak.com Workspace #43791")
 }
 
 @Test

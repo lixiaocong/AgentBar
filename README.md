@@ -4,11 +4,11 @@ Minimal macOS menu bar app for tracking local coding-agent usage and account sta
 
 > This app was generated entirely by coding agents.
 
-AgentBar signs in to supported providers through the browser, stores tokens in its own macOS Keychain entries, and displays signed-in accounts side by side in the menu bar popover. It does not depend on local CLI or IDE login files.
+AgentBar uses app-owned sign-in for browser/API-token providers, stores tokens in its own macOS Keychain vault, and displays signed-in accounts side by side in the menu bar popover.
 
 ## Desktop Widget
 
-AgentBar now bundles a native macOS desktop widget. After installing `build/AgentBar.app`, add it from the widget gallery and place it on the desktop to see Codex, GitHub Copilot, Gemini, and Claude side by side without opening the menu bar popover.
+AgentBar now bundles a native macOS desktop widget. After installing `build/AgentBar.app`, add it from the widget gallery and place it on the desktop to see one selected Codex, GitHub Copilot, Gemini, Claude, or Junie account without opening the menu bar popover.
 
 For the most reliable widget discovery flow, use:
 
@@ -30,6 +30,7 @@ Current providers:
 - GitHub Copilot
 - Gemini Code Assist
 - Claude Code
+- Junie by JetBrains
 
 ## Run
 
@@ -88,3 +89,14 @@ It displays:
 AgentBar reads Claude Code auth from `~/.config/claude-code/auth.json` by default. You can also add another directory that contains `auth.json` from Settings.
 
 AgentBar does not currently show Claude quota windows because the app does not have a confirmed quota endpoint wired for Claude yet. The Claude card shows the detected local account and auth type.
+
+### Junie
+
+AgentBar stores a Junie API token in its own macOS Keychain vault. Add the token from Settings after generating it at `junie.jetbrains.com/cli`.
+
+It displays:
+
+- detected Junie account
+- license/auth type
+- current AI Assistant monthly credits when JetBrains exposes them
+- remaining quota progress bar and renewal time when the JetBrains AI Assistant quota cache is present

@@ -141,12 +141,45 @@ import Testing
 
 @Test func geminiParsesOAuthClientMetadataFromCLIJavaScript() throws {
     let source = """
-    const OAUTH_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
-    const OAUTH_CLIENT_SECRET = 'test-client-secret';
+    var OAUTH_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+    var OAUTH_CLIENT_SECRET = 'test-client-secret';
     """
 
     let metadata = try GeminiQuotaService.parseOAuthClientConfiguration(source: source)
 
     #expect(metadata.clientID == "test-client-id.apps.googleusercontent.com")
     #expect(metadata.clientSecret == "test-client-secret")
+}
+
+@Test func geminiLoadsOAuthMetadataFromBundledCLIChunks() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appending(path: "AgentBarGeminiBundle-\(UUID().uuidString)", directoryHint: .isDirectory)
+    let bundle = root
+        .appending(path: "lib/node_modules/@google/gemini-cli/bundle", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+    let executable = bundle.appending(path: "gemini.js")
+    let chunk = bundle.appending(path: "chunk-test.js")
+    try "#!/usr/bin/env node\n".data(using: .utf8)!.write(to: executable)
+    try """
+    var OAUTH_CLIENT_ID = "bundle-client-id.apps.googleusercontent.com";
+    var OAUTH_CLIENT_SECRET = "bundle-client-secret";
+    """.data(using: .utf8)!.write(to: chunk)
+
+    let installation = GeminiCLIInstallation(
+        configDirectory: root,
+        executableLocations: [executable]
+    )
+    let metadata = try GeminiOAuthConfiguration.loadClient(from: installation)
+
+    #expect(metadata.clientID == "bundle-client-id.apps.googleusercontent.com")
+    #expect(metadata.clientSecret == "bundle-client-secret")
+}
+
+@Test func geminiRefreshErrorsIdentifyInvalidStoredLogins() {
+    #expect(GeminiQuotaError.missingAccessToken.invalidatesStoredLogin)
+    #expect(GeminiQuotaError.missingRefreshToken.invalidatesStoredLogin)
+    #expect(GeminiQuotaError.missingOAuthClientMetadata.invalidatesStoredLogin)
+    #expect(GeminiQuotaError.tokenRefreshFailed(400, message: #"{"error":"invalid_grant"}"#).invalidatesStoredLogin)
+    #expect(!GeminiQuotaError.tokenRefreshFailed(500, message: "temporary backend error").invalidatesStoredLogin)
+    #expect(!GeminiQuotaError.httpStatus(401, message: "quota API unauthorized").invalidatesStoredLogin)
 }

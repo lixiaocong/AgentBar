@@ -8,10 +8,21 @@ public struct GeminiCLIInstallation: Sendable {
     public let executableLocations: [URL]
     public let appManagedAccountID: String?
 
-    public static let defaultExecutableLocations = [
-        URL(fileURLWithPath: "/opt/homebrew/bin/gemini"),
-        URL(fileURLWithPath: "/usr/local/bin/gemini"),
-    ]
+    public static var defaultExecutableLocations: [URL] {
+        var locations = [
+            URL(fileURLWithPath: "/opt/homebrew/bin/gemini"),
+            URL(fileURLWithPath: "/usr/local/bin/gemini"),
+            FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: ".local/bin/gemini"),
+            FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: ".asdf/shims/gemini"),
+            FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: ".volta/bin/gemini"),
+        ]
+
+        locations.append(contentsOf: nvmGeminiExecutables())
+        return uniqueURLs(locations)
+    }
 
     public static let `default` = GeminiCLIInstallation(
         configDirectory: AgentProviderAppAuthStore.accountsDirectory(for: .gemini),
@@ -47,6 +58,30 @@ public struct GeminiCLIInstallation: Sendable {
         return candidates
     }
 
+    private static func nvmGeminiExecutables() -> [URL] {
+        let versionsDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: ".nvm/versions/node", directoryHint: .isDirectory)
+
+        guard let versionDirectories = try? FileManager.default.contentsOfDirectory(
+            at: versionsDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return versionDirectories.map { versionDirectory in
+            versionDirectory.appending(path: "bin/gemini")
+        }
+    }
+
+    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { url in
+            seen.insert(url.standardizedFileURL.path).inserted
+        }
+    }
+
     private static func oauthClientSourceCandidates(derivedFrom executable: URL) -> [URL] {
         let suffixes = [
             "libexec/lib/node_modules/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/code_assist/oauth2.js",
@@ -66,11 +101,18 @@ public struct GeminiCLIInstallation: Sendable {
             current = parent
         }
 
-        return directories.flatMap { directory in
+        let sourceFiles = directories.flatMap { directory in
             suffixes.map { suffix in
                 directory.appending(path: suffix)
             }
         }
+        let bundleDirectories = directories.map { directory in
+            directory.lastPathComponent == "bundle"
+                ? directory
+                : directory.appending(path: "bundle", directoryHint: .isDirectory)
+        }
+
+        return uniqueURLs(sourceFiles + bundleDirectories)
     }
 
     private func appendUnique(_ urls: [URL], to existing: inout [URL]) {
@@ -406,17 +448,21 @@ public struct GeminiQuotaService: Sendable {
     }
 
     private static func extractJavaScriptConstant(named name: String, from source: String) -> String? {
-        for delimiter in ["'", "\""] {
-            let prefix = "const \(name) = \(delimiter)"
-            guard let start = source.range(of: prefix)?.upperBound else {
-                continue
-            }
+        for declaration in ["const", "let", "var"] {
+            for delimiter in ["'", "\""] {
+                for spacing in [" = ", "="] {
+                    let prefix = "\(declaration) \(name)\(spacing)\(delimiter)"
+                    guard let start = source.range(of: prefix)?.upperBound else {
+                        continue
+                    }
 
-            guard let end = source[start...].firstIndex(of: delimiter.first!) else {
-                continue
-            }
+                    guard let end = source[start...].firstIndex(of: delimiter.first!) else {
+                        continue
+                    }
 
-            return String(source[start ..< end])
+                    return String(source[start ..< end])
+                }
+            }
         }
 
         return nil
@@ -443,13 +489,33 @@ public enum GeminiQuotaError: LocalizedError, Equatable {
         case .missingRefreshToken:
             return "Gemini access token expired and no refresh token is available. Sign in from AgentBar settings."
         case .missingOAuthClientMetadata:
-            return "Gemini access token expired and AgentBar could not refresh it."
+            return "Gemini OAuth client metadata was not found. Install or update Gemini CLI, then sign in from AgentBar settings."
         case let .tokenRefreshFailed(code, message):
             return "Gemini token refresh failed with HTTP \(code): \(message)"
         case .invalidResponse:
             return "The Gemini quota API returned an invalid response."
         case let .httpStatus(code, message):
             return "Gemini API request failed with HTTP \(code): \(message)"
+        }
+    }
+
+    public var invalidatesStoredLogin: Bool {
+        switch self {
+        case .missingAccessToken, .missingRefreshToken, .missingOAuthClientMetadata:
+            return true
+        case let .tokenRefreshFailed(statusCode, message):
+            guard (400 ... 499).contains(statusCode) else {
+                return false
+            }
+
+            let normalized = message.lowercased()
+            return normalized.contains("invalid_grant")
+                || normalized.contains("invalid_token")
+                || normalized.contains("token has been expired")
+                || normalized.contains("token has been revoked")
+                || normalized.contains("refresh token")
+        case .missingAppLogin, .invalidResponse, .httpStatus:
+            return false
         }
     }
 }
@@ -479,11 +545,7 @@ public enum GeminiOAuthConfiguration {
     public static let userInfoURL = URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!
 
     public static func loadClient(from installation: GeminiCLIInstallation = .default) throws -> GeminiOAuthClientConfiguration {
-        for sourceFile in installation.oauthClientSourceCandidates {
-            guard FileManager.default.fileExists(atPath: sourceFile.path) else {
-                continue
-            }
-
+        for sourceFile in sourceFiles(from: installation.oauthClientSourceCandidates) {
             do {
                 let source = try String(contentsOf: sourceFile, encoding: .utf8)
                 return try GeminiQuotaService.parseOAuthClientConfiguration(source: source)
@@ -493,6 +555,32 @@ public enum GeminiOAuthConfiguration {
         }
 
         throw GeminiQuotaError.missingOAuthClientMetadata
+    }
+
+    private static func sourceFiles(from candidates: [URL]) -> [URL] {
+        var files: [URL] = []
+        for candidate in candidates {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory) else {
+                continue
+            }
+
+            if isDirectory.boolValue {
+                let bundleFiles = (try? FileManager.default.contentsOfDirectory(
+                    at: candidate,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )) ?? []
+                files.append(contentsOf: bundleFiles.filter { $0.pathExtension == "js" }.sorted { $0.lastPathComponent < $1.lastPathComponent })
+            } else {
+                files.append(candidate)
+            }
+        }
+
+        var seen = Set<String>()
+        return files.filter { file in
+            seen.insert(file.standardizedFileURL.path).inserted
+        }
     }
 }
 

@@ -31,41 +31,6 @@ public struct CodexInstallation: Sendable {
 public struct CodexQuotaService: Sendable {
     public let installation: CodexInstallation
 
-    private static let knownBusinessDomains: [String: String] = [
-        "newsbreak.com": "NewsBreak"
-    ]
-
-    private static let compoundTLDs: Set<String> = [
-        "co.jp",
-        "co.uk",
-        "com.au",
-        "com.cn",
-        "com.hk",
-        "com.sg"
-    ]
-
-    private static let personalEmailDomains: Set<String> = [
-        "126.com",
-        "163.com",
-        "aol.com",
-        "fastmail.com",
-        "foxmail.com",
-        "gmail.com",
-        "googlemail.com",
-        "hotmail.com",
-        "icloud.com",
-        "live.com",
-        "mac.com",
-        "me.com",
-        "msn.com",
-        "outlook.com",
-        "proton.me",
-        "protonmail.com",
-        "qq.com",
-        "yahoo.com",
-        "yeah.net"
-    ]
-
     public init(installation: CodexInstallation = .default) {
         self.installation = installation
     }
@@ -126,11 +91,12 @@ public struct CodexQuotaService: Sendable {
 
         logDebug("Codex response body: \(String(data: data, encoding: .utf8) ?? "<non-UTF8>")", log: networkLog)
 
+        let apiWorkspaceLabel = try? await loadWorkspaceDisplayName(credentials: credentials)
+
         return try decodeSnapshot(
             from: data,
             accountLabel: credentials.accountLabel,
-            spaceLabel: credentials.spaceLabel,
-            businessWorkspaceLabel: credentials.businessWorkspaceLabel,
+            spaceLabel: apiWorkspaceLabel ?? credentials.spaceLabel,
             updatedAt: Date()
         )
     }
@@ -139,7 +105,6 @@ public struct CodexQuotaService: Sendable {
         from data: Data,
         accountLabel: String,
         spaceLabel: String? = nil,
-        businessWorkspaceLabel: String? = nil,
         updatedAt: Date
     ) throws -> AgentQuotaSnapshot {
         let decoder = JSONDecoder()
@@ -160,7 +125,6 @@ public struct CodexQuotaService: Sendable {
             accountLabel: accountLabel,
             spaceLabel: displaySpaceLabel(
                 rawSpaceLabel: spaceLabel,
-                businessWorkspaceLabel: businessWorkspaceLabel,
                 planType: payload.planType
             ),
             planType: payload.planType,
@@ -220,17 +184,17 @@ public struct CodexQuotaService: Sendable {
 
     private func displaySpaceLabel(
         rawSpaceLabel: String?,
-        businessWorkspaceLabel: String?,
         planType: String?
     ) -> String? {
         let normalizedPlan = planType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
 
         if isBusinessPlan(normalizedPlan) {
-            if let workspaceLabel = trimmedLabel(businessWorkspaceLabel) {
-                return "\(workspaceLabel) Business"
+            if let workspaceLabel = trimmedLabel(rawSpaceLabel),
+               !isGenericPersonalSpaceLabel(workspaceLabel) {
+                return "\(workspaceDisplayName(from: workspaceLabel)) · \(businessPlanFallbackLabel(normalizedPlan))"
             }
 
-            return "Business"
+            return businessPlanFallbackLabel(normalizedPlan)
         }
 
         if normalizedPlan.contains("pro") {
@@ -248,68 +212,43 @@ public struct CodexQuotaService: Sendable {
         return trimmedLabel(rawSpaceLabel)
     }
 
+    private func isGenericPersonalSpaceLabel(_ label: String) -> Bool {
+        let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "personal" ||
+            normalized == "personal workspace" ||
+            normalized == "personal org"
+    }
+
+    private func workspaceDisplayName(from label: String) -> String {
+        label.replacingOccurrences(
+            of: #"(?i)\s+workspace\s+#(\d+)$"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+
+    private func businessPlanFallbackLabel(_ normalizedPlan: String) -> String {
+        if normalizedPlan.contains("enterprise") {
+            return "Enterprise"
+        }
+
+        if normalizedPlan.contains("edu") {
+            return "Education"
+        }
+
+        if normalizedPlan.contains("team") {
+            return "Team"
+        }
+
+        return "Business"
+    }
+
     private func isBusinessPlan(_ normalizedPlan: String) -> Bool {
         normalizedPlan.contains("team") ||
             normalizedPlan.contains("business") ||
             normalizedPlan.contains("enterprise") ||
             normalizedPlan.contains("workspace") ||
             normalizedPlan.contains("edu")
-    }
-
-    private func businessWorkspaceLabel(
-        accountID: String,
-        currentIdentity: CodexTokenIdentity?
-    ) -> String? {
-        if let label = workspaceLabel(fromEmail: currentIdentity?.email) {
-            return label
-        }
-
-        for storageAccountID in CodexAppAuthStore.storedSessionAccountIDs() {
-            guard let session = try? CodexAppAuthStore.loadSession(accountID: storageAccountID),
-                  session.accountID == accountID,
-                  let identity = CodexAppAuthStore.identity(from: session.idToken),
-                  let label = workspaceLabel(fromEmail: identity.email) else {
-                continue
-            }
-
-            return label
-        }
-
-        return nil
-    }
-
-    private func workspaceLabel(fromEmail email: String?) -> String? {
-        guard let email,
-              let domain = email.split(separator: "@").last?.lowercased(),
-              !Self.personalEmailDomains.contains(domain) else {
-            return nil
-        }
-
-        if let knownLabel = Self.knownBusinessDomains[domain] {
-            return knownLabel
-        }
-
-        let labels = domain.split(separator: ".").map(String.init)
-        guard labels.count >= 2 else {
-            return nil
-        }
-
-        let rootLabel = labels.dropLast(Self.compoundTLDs.contains(labels.suffix(2).joined(separator: ".")) ? 2 : 1).last
-        guard let rootLabel, !rootLabel.isEmpty else {
-            return nil
-        }
-
-        return rootLabel
-            .split(whereSeparator: { $0 == "-" || $0 == "_" })
-            .map { word in
-                let lowered = word.lowercased()
-                if lowered.count <= 3 {
-                    return lowered.uppercased()
-                }
-
-                return lowered.prefix(1).uppercased() + lowered.dropFirst()
-            }
-            .joined(separator: " ")
     }
 
     private func trimmedLabel(_ value: String?) -> String? {
@@ -319,6 +258,53 @@ public struct CodexQuotaService: Sendable {
         }
 
         return trimmed
+    }
+
+    private func loadWorkspaceDisplayName(credentials: CodexAuthCredentials) async throws -> String? {
+        let encodedAccountID = percentEncodedPathSegment(credentials.accountID)
+        var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/accounts/\(encodedAccountID)/settings")!)
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(credentials.accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("codex-cli", forHTTPHeaderField: "User-Agent")
+
+        logInfo("Codex → GET /backend-api/accounts/<account>/settings (account: \(masked(credentials.accountID)))", log: networkLog)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexQuotaError.invalidResponse
+        }
+
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            logDebug("Codex workspace settings unavailable: HTTP \(httpResponse.statusCode)", log: networkLog)
+            return nil
+        }
+
+        return try decodeWorkspaceDisplayName(from: data)
+    }
+
+    func decodeWorkspaceDisplayName(from data: Data) throws -> String? {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = try decoder.decode(CodexWorkspaceSettingsPayload.self, from: data)
+        return trimmedLabel(payload.workspaceName) ??
+            trimmedLabel(payload.displayName) ??
+            trimmedLabel(payload.name) ??
+            trimmedLabel(payload.publicDisplayName)
+    }
+
+    private func percentEncodedPathSegment(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        return value.unicodeScalars
+            .map { scalar in
+                if allowed.contains(scalar) {
+                    return String(scalar)
+                }
+
+                return String(scalar.utf8.map { String(format: "%%%02X", $0) }.joined())
+            }
+            .joined()
     }
 
     private func masked(_ value: String) -> String {
@@ -396,10 +382,6 @@ public struct CodexQuotaService: Sendable {
             fallbackAccountID: credentials.accountID
         )
         let spaceLabel = updatedIdentity?.spaceLabel ?? credentials.spaceLabel
-        let businessWorkspaceLabel = businessWorkspaceLabel(
-            accountID: credentials.accountID,
-            currentIdentity: updatedIdentity
-        ) ?? credentials.businessWorkspaceLabel
         logInfo("[Codex] AgentBar credentials refreshed for account \(masked(credentials.accountID))")
 
         return CodexAuthCredentials(
@@ -409,7 +391,6 @@ public struct CodexQuotaService: Sendable {
             accountID: credentials.accountID,
             accountLabel: accountLabel,
             spaceLabel: spaceLabel,
-            businessWorkspaceLabel: businessWorkspaceLabel,
             appManagedAccountID: appManagedAccountID
         )
     }
@@ -447,8 +428,6 @@ public struct CodexQuotaService: Sendable {
             fallbackAccountID: session.accountID
         )
         let spaceLabel = preferredSpaceLabel(idToken: session.idToken)
-        let identity = CodexAppAuthStore.identity(from: session.idToken)
-        let businessWorkspaceLabel = businessWorkspaceLabel(accountID: session.accountID, currentIdentity: identity)
 
         return CodexAuthCredentials(
             accessToken: session.accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -457,7 +436,6 @@ public struct CodexQuotaService: Sendable {
             accountID: session.accountID,
             accountLabel: accountLabel,
             spaceLabel: spaceLabel,
-            businessWorkspaceLabel: businessWorkspaceLabel,
             appManagedAccountID: storageAccountID
         )
     }
@@ -570,8 +548,14 @@ private struct CodexAuthCredentials: Sendable {
     let accountID: String
     let accountLabel: String
     let spaceLabel: String?
-    let businessWorkspaceLabel: String?
     let appManagedAccountID: String?
+}
+
+private struct CodexWorkspaceSettingsPayload: Decodable {
+    let workspaceName: String?
+    let displayName: String?
+    let name: String?
+    let publicDisplayName: String?
 }
 
 private struct CodexUsagePayload: Decodable {

@@ -314,6 +314,8 @@ public extension AgentProviderKind {
             return 2
         case .claude:
             return 3
+        case .junie:
+            return 4
         }
     }
 }

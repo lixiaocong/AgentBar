@@ -33,6 +33,8 @@ enum MenuBarStatusImage {
                 return "gm"
             case .claude:
                 return "cl"
+            case .junie:
+                return "jn"
             case nil:
                 return "--"
             }
@@ -192,16 +194,16 @@ enum MenuBarStatusImage {
     private static func progressColor(for remainingPercent: Double?) -> NSColor {
         guard let remainingPercent else { return .labelColor }
 
-        switch remainingPercent {
-        case 75...:
-            return .systemGreen
-        case 45..<75:
-            return .systemYellow
-        case 20..<45:
-            return .systemOrange
-        default:
-            return .systemRed
-        }
+        return color(from: AgentQuotaDisplayColor.color(for: remainingPercent))
+    }
+
+    private static func color(from rgb: AgentQuotaDisplayRGB) -> NSColor {
+        NSColor(
+            calibratedRed: CGFloat(rgb.red),
+            green: CGFloat(rgb.green),
+            blue: CGFloat(rgb.blue),
+            alpha: 1
+        )
     }
 
 }
