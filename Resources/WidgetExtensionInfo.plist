@@ -31,7 +31,7 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).AgentBarWidgetExtension</string>
+		<string>$(PRODUCT_MODULE_NAME).AgentBarWidgets</string>
 	</dict>
 </dict>
 </plist>

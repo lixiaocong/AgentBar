@@ -600,7 +600,7 @@ private extension AgentWidgetState {
 }
 
 @main
-struct AgentBarWidgetExtension: WidgetBundle {
+struct AgentBarWidgets: WidgetBundle {
     var body: some Widget {
         AgentBarDesktopWidget()
     }
