@@ -4,26 +4,11 @@ import Testing
 
 @Test
 func decodesGitHubCopilotUsagePayload() throws {
-    let payload = """
-    {
-      "login": "monalisa",
-      "copilot_plan": "pro",
-      "quota_reset_date_utc": "2026-05-01T00:00:00.000Z",
-      "quota_snapshots": {
-        "premium_interactions": {
-          "remaining": 150,
-          "entitlement": 300,
-          "percent_remaining": 50.0,
-          "unlimited": false,
-          "overage_count": 0
-        }
-      }
-    }
-    """
+    let payload = try sharedFixtureData("copilot", "premium.json")
 
     let updatedAt = Date(timeIntervalSince1970: 1_744_160_000)
     let snapshot = try GitHubCopilotQuotaService().decodeSnapshot(
-        from: Data(payload.utf8),
+        from: payload,
         updatedAt: updatedAt
     )
 

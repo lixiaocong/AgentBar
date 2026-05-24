@@ -1,0 +1,11 @@
+{
+  "oauth": {
+    "account": {
+      "email": "dev@example.com",
+      "name": "Dev User"
+    },
+    "accessToken": "token",
+    "refreshToken": "refresh-token"
+  },
+  "subscriptionType": "max"
+}

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>AgentBar</AssemblyName>
+    <Title>AgentBar</Title>
+    <Product>AgentBar</Product>
+    <Description>AgentBar</Description>
+    <ApplicationIcon>AppIcon.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="AppIcon.ico" LogicalName="AgentBar.Windows.AppIcon.ico" />
+    <ProjectReference Include="..\AgentBar.Core\AgentBar.Core.csproj" />
+  </ItemGroup>
+</Project>

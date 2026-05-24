@@ -1,0 +1,23 @@
+{
+  "provider": "codex",
+  "accountLabel": "Account test",
+  "spaceLabel": "Newsbreak-BJ - Team",
+  "planType": "team",
+  "sourceSummary": "ChatGPT Codex API",
+  "metrics": [
+    {
+      "id": "window-300",
+      "title": "5 hour window",
+      "usedPercent": 40,
+      "usedLabel": "40% used",
+      "remainingLabel": "60% left"
+    },
+    {
+      "id": "window-10080",
+      "title": "7 day window",
+      "usedPercent": 34,
+      "usedLabel": "34% used",
+      "remainingLabel": "66% left"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "provider": "githubCopilot",
+  "accountLabel": "@monalisa",
+  "planType": "pro",
+  "sourceSummary": "GitHub Copilot API",
+  "metrics": [
+    {
+      "id": "github-copilot-premium-interactions",
+      "title": "Premium requests / month",
+      "usedPercent": 50,
+      "usedLabel": "150/300 used",
+      "remainingLabel": "150 left"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "username": "dev@example.com",
+  "active": true,
+  "balanceLeft": 120.5,
+  "licenseType": "junie_pro",
+  "balanceUnit": "credits",
+  "authType": "api_key"
+}

@@ -3,39 +3,8 @@ import Foundation
 import Testing
 
 @Test func decodesGeminiQuotaPayload() throws {
-    let codeAssistJSON = """
-    {
-        "cloudaicompanionProject": "smart-pipe-wbjcj",
-        "currentTier": {"id": "free-tier", "name": "Gemini Code Assist for individuals"}
-    }
-    """.data(using: .utf8)!
-
-    let quotaJSON = """
-    {
-        "buckets": [
-            {
-                "resetTime": "2026-04-10T06:44:29Z",
-                "tokenType": "REQUESTS",
-                "modelId": "gemini-2.5-flash",
-                "remainingFraction": 0.75,
-                "remainingAmount": "150"
-            },
-            {
-                "resetTime": "2026-04-10T06:44:29Z",
-                "tokenType": "REQUESTS",
-                "modelId": "gemini-2.5-flash-lite",
-                "remainingFraction": 1.0,
-                "remainingAmount": "200"
-            },
-            {
-                "resetTime": "1970-01-01T00:00:00Z",
-                "tokenType": "REQUESTS",
-                "modelId": "gemini-2.5-pro",
-                "remainingFraction": 0
-            }
-        ]
-    }
-    """.data(using: .utf8)!
+    let codeAssistJSON = try sharedFixtureData("gemini", "code-assist-free.json")
+    let quotaJSON = try sharedFixtureData("gemini", "quota-free.json")
 
     let service = GeminiQuotaService()
     let snapshot = try service.decodeSnapshot(
