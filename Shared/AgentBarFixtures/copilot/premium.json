@@ -1,0 +1,14 @@
+{
+  "login": "monalisa",
+  "copilot_plan": "pro",
+  "quota_reset_date_utc": "2026-05-01T00:00:00.000Z",
+  "quota_snapshots": {
+    "premium_interactions": {
+      "remaining": 150,
+      "entitlement": 300,
+      "percent_remaining": 50.0,
+      "unlimited": false,
+      "overage_count": 0
+    }
+  }
+}

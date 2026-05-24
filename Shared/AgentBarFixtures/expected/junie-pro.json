@@ -1,0 +1,15 @@
+{
+  "provider": "junie",
+  "accountLabel": "dev@example.com",
+  "planType": "Pro",
+  "sourceSummary": "Active - $120.50 / $200 left",
+  "metrics": [
+    {
+      "id": "junie-subscription-quota",
+      "title": "Subscription quota",
+      "usedPercent": 39.75,
+      "usedLabel": "$79.50 used",
+      "remainingLabel": "$120.50 / $200 left"
+    }
+  ]
+}

@@ -11,5 +11,9 @@ AgentBar.xcodeproj/
 .cache/
 .home/
 
+# Windows build output
+Windows/**/bin/
+Windows/**/obj/
+
 # macOS
 .DS_Store

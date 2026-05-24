@@ -4,27 +4,11 @@ import Testing
 
 @Test
 func decodesCodexCloudUsagePayload() throws {
-    let payload = """
-    {
-      "plan_type": "team",
-      "rate_limit": {
-        "primary_window": {
-          "used_percent": 40,
-          "limit_window_seconds": 18000,
-          "reset_at": 1775658567
-        },
-        "secondary_window": {
-          "used_percent": 34,
-          "limit_window_seconds": 604800,
-          "reset_at": 1775791369
-        }
-      }
-    }
-    """
+    let payload = try sharedFixtureData("codex", "usage-team.json")
 
     let updatedAt = Date(timeIntervalSince1970: 1775600000)
     let snapshot = try CodexQuotaService().decodeSnapshot(
-        from: Data(payload.utf8),
+        from: payload,
         accountLabel: "Account test",
         spaceLabel: "Newsbreak-BJ",
         updatedAt: updatedAt

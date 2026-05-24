@@ -4,23 +4,11 @@ import Testing
 
 @Test
 func decodesClaudeSubscriptionAuthSnapshot() throws {
-    let payload = """
-    {
-      "oauth": {
-        "account": {
-          "email": "dev@example.com",
-          "name": "Dev User"
-        },
-        "accessToken": "token",
-        "refreshToken": "refresh-token"
-      },
-      "subscriptionType": "max"
-    }
-    """
+    let payload = try sharedFixtureData("claude", "subscription-auth.json")
 
     let updatedAt = Date(timeIntervalSince1970: 1_744_160_000)
     let snapshot = try ClaudeQuotaService().decodeSnapshot(
-        from: Data(payload.utf8),
+        from: payload,
         updatedAt: updatedAt
     )
 

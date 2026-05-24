@@ -4,29 +4,13 @@ import Testing
 
 @Test
 func decodesJunieAuthInfoPayload() throws {
-    let payload = """
-    {
-      "username": "dev@example.com",
-      "active": true,
-      "balanceLeft": 120.5,
-      "licenseType": "junie_pro",
-      "balanceUnit": "credits",
-      "authType": "api_key"
-    }
-    """
-    let quotaPayload = """
-    {
-      "current": {
-        "current": { "amount": "120.50" },
-        "maximum": { "amount": "200.00" }
-      }
-    }
-    """
+    let payload = try sharedFixtureData("junie", "auth-info.json")
+    let quotaPayload = try sharedFixtureData("junie", "quota.json")
 
     let updatedAt = Date(timeIntervalSince1970: 1_776_240_000)
     let snapshot = try JunieQuotaService().decodeSnapshot(
-        from: Data(payload.utf8),
-        quotaData: Data(quotaPayload.utf8),
+        from: payload,
+        quotaData: quotaPayload,
         accountLabelFallback: "Fallback Junie",
         updatedAt: updatedAt
     )
