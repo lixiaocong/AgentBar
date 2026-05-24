@@ -15,6 +15,8 @@ public sealed class TrayController : IDisposable
     private PopoverWindow? _popover;
     private SettingsWindow? _settings;
     private System.Drawing.Icon? _currentIcon;
+    private bool _dynamicTrayIconEnabled;
+    private bool _disposed;
     private DateTimeOffset _lastTrayActivation = DateTimeOffset.MinValue;
     private System.Drawing.Point _lastTrayAnchor = System.Drawing.Point.Empty;
 
@@ -41,16 +43,21 @@ public sealed class TrayController : IDisposable
         _notifyIcon.MouseClick += NotifyIconOnMouseClick;
         _notifyIcon.DoubleClick += NotifyIconOnDoubleClick;
         _coordinator.Updated += CoordinatorOnUpdated;
-        UpdateTray();
+        UseApplicationIconForShellRegistration();
+        UpdateTrayText();
     }
 
     public void Show()
     {
+        UseApplicationIconForShellRegistration();
+        UpdateTrayText();
         _notifyIcon.Visible = true;
+        _ = EnableDynamicTrayIconAfterShellRegistrationAsync();
     }
 
     public void Dispose()
     {
+        _disposed = true;
         _coordinator.Updated -= CoordinatorOnUpdated;
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -117,10 +124,68 @@ public sealed class TrayController : IDisposable
     {
         System.Windows.Application.Current.Dispatcher.Invoke(() =>
         {
-            UpdateTray();
+            if (_dynamicTrayIconEnabled)
+            {
+                UpdateTray();
+            }
+            else
+            {
+                UpdateTrayText();
+            }
+
             _popover?.Render();
             _settings?.Render();
         });
+    }
+
+    private async Task EnableDynamicTrayIconAfterShellRegistrationAsync()
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(900));
+        if (_disposed)
+        {
+            return;
+        }
+
+        var dispatcher = System.Windows.Application.Current.Dispatcher;
+        if (dispatcher.CheckAccess())
+        {
+            EnableDynamicTrayIcon();
+        }
+        else
+        {
+            dispatcher.Invoke(EnableDynamicTrayIcon);
+        }
+    }
+
+    private void EnableDynamicTrayIcon()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _dynamicTrayIconEnabled = true;
+        UpdateTray();
+    }
+
+    private void UseApplicationIconForShellRegistration()
+    {
+        if (_dynamicTrayIconEnabled || _disposed)
+        {
+            return;
+        }
+
+        var appIcon = LoadApplicationIcon();
+        if (appIcon is null)
+        {
+            UpdateTray();
+            return;
+        }
+
+        var previous = _currentIcon;
+        _currentIcon = appIcon;
+        _notifyIcon.Icon = _currentIcon;
+        previous?.Dispose();
     }
 
     private void UpdateTray()
@@ -129,8 +194,13 @@ public sealed class TrayController : IDisposable
         var previous = _currentIcon;
         _currentIcon = rendered.Icon;
         _notifyIcon.Icon = _currentIcon;
-        _notifyIcon.Text = TooltipForNotifyIcon(_coordinator.TooltipText);
+        UpdateTrayText();
         previous?.Dispose();
+    }
+
+    private void UpdateTrayText()
+    {
+        _notifyIcon.Text = TooltipForNotifyIcon(_coordinator.TooltipText);
     }
 
     private void OpenPopoverFromTray(bool toggle)
@@ -217,5 +287,20 @@ public sealed class TrayController : IDisposable
     {
         var singleLine = text.Replace(Environment.NewLine, " | ");
         return singleLine.Length <= 63 ? singleLine : singleLine[..60] + "...";
+    }
+
+    private static System.Drawing.Icon? LoadApplicationIcon()
+    {
+        try
+        {
+            var processPath = Environment.ProcessPath;
+            return string.IsNullOrWhiteSpace(processPath)
+                ? null
+                : System.Drawing.Icon.ExtractAssociatedIcon(processPath);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }
