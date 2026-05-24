@@ -8,6 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <AssemblyName>AgentBar</AssemblyName>
+    <Title>AgentBar</Title>
+    <Product>AgentBar</Product>
+    <Description>AgentBar</Description>
     <ApplicationIcon>AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>

@@ -6,7 +6,11 @@ namespace AgentBar.Windows;
 internal static class NotifyIconSettingsIconSnapshot
 {
     private const string NotifyIconSettingsKey = @"Control Panel\NotifyIconSettings";
-    private const string ProductExecutablePrefix = "AgentBar.Windows";
+    private static readonly string[] ProductExecutablePrefixes =
+    {
+        "AgentBar",
+        "AgentBar.Windows"
+    };
 
     public static void UpdateCurrentProcessSnapshot()
     {
@@ -69,8 +73,16 @@ internal static class NotifyIconSettingsIconSnapshot
     private static bool IsSameProductExecutable(string executablePath)
     {
         var fileName = Path.GetFileName(executablePath);
-        return fileName.Equals($"{ProductExecutablePrefix}.exe", StringComparison.OrdinalIgnoreCase) ||
-               fileName.StartsWith($"{ProductExecutablePrefix}.", StringComparison.OrdinalIgnoreCase);
+        foreach (var prefix in ProductExecutablePrefixes)
+        {
+            if (fileName.Equals($"{prefix}.exe", StringComparison.OrdinalIgnoreCase) ||
+                fileName.StartsWith($"{prefix}.", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string NormalizePath(string path)
