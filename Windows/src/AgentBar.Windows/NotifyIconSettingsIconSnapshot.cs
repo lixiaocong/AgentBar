@@ -6,6 +6,7 @@ namespace AgentBar.Windows;
 internal static class NotifyIconSettingsIconSnapshot
 {
     private const string NotifyIconSettingsKey = @"Control Panel\NotifyIconSettings";
+    private const string ProductExecutablePrefix = "AgentBar.Windows";
 
     public static void UpdateCurrentProcessSnapshot()
     {
@@ -29,6 +30,8 @@ internal static class NotifyIconSettingsIconSnapshot
                 return;
             }
 
+            var normalizedProcessPath = NormalizePath(processPath);
+            var staleKeys = new List<string>();
             foreach (var name in root.GetSubKeyNames())
             {
                 using var key = root.OpenSubKey(name, writable: true);
@@ -37,13 +40,23 @@ internal static class NotifyIconSettingsIconSnapshot
                     continue;
                 }
 
+                var normalizedExecutablePath = NormalizePath(executablePath);
                 if (string.Equals(
-                        NormalizePath(executablePath),
-                        NormalizePath(processPath),
+                        normalizedExecutablePath,
+                        normalizedProcessPath,
                         StringComparison.OrdinalIgnoreCase))
                 {
                     key.SetValue("IconSnapshot", snapshot, RegistryValueKind.Binary);
                 }
+                else if (IsSameProductExecutable(normalizedExecutablePath))
+                {
+                    staleKeys.Add(name);
+                }
+            }
+
+            foreach (var staleKey in staleKeys)
+            {
+                root.DeleteSubKeyTree(staleKey, throwOnMissingSubKey: false);
             }
         }
         catch (Exception exception)
@@ -51,6 +64,13 @@ internal static class NotifyIconSettingsIconSnapshot
             ShellLog.Write(exception, "NotifyIconSettings snapshot sync failed");
             // Windows settings will fall back to its own cached tray icon snapshot.
         }
+    }
+
+    private static bool IsSameProductExecutable(string executablePath)
+    {
+        var fileName = Path.GetFileName(executablePath);
+        return fileName.Equals($"{ProductExecutablePrefix}.exe", StringComparison.OrdinalIgnoreCase) ||
+               fileName.StartsWith($"{ProductExecutablePrefix}.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizePath(string path)
