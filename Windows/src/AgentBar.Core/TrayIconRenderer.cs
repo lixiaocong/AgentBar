@@ -6,6 +6,8 @@ namespace AgentBar.Core;
 
 public sealed class TrayIconRenderer : ITrayIconRenderer
 {
+    private static readonly Lazy<Bitmap?> AppIconBitmap = new(LoadAppIconBitmap);
+
     public IconRenderResult Render(IReadOnlyList<TrayStatusBar> bars, int size = 32)
     {
         var status = bars.FirstOrDefault() ?? new TrayStatusBar(null, "--", null);
@@ -17,11 +19,17 @@ public sealed class TrayIconRenderer : ITrayIconRenderer
         graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-        var margin = Math.Max(1.0f, size * 0.045f);
-        var rect = new RectangleF(margin, margin, size - margin * 2, size - margin * 2);
+        var hasAppIcon = DrawAppIcon(graphics, size);
+        var margin = hasAppIcon ? Math.Max(1.0f, size * 0.03f) : Math.Max(1.0f, size * 0.045f);
+        var badgeSize = hasAppIcon ? Math.Max(14.0f, size * 0.48f) : size - margin * 2;
+        var rect = hasAppIcon
+            ? new RectangleF(size - badgeSize - margin, size - badgeSize - margin, badgeSize, badgeSize)
+            : new RectangleF(margin, margin, size - margin * 2, size - margin * 2);
         using var trackBrush = new SolidBrush(TrackColor(status));
         using var fillBrush = new SolidBrush(FillColor(status));
-        using var outlinePen = new Pen(Color.FromArgb(150, 255, 255, 255), Math.Max(1.0f, size / 26f));
+        using var outlinePen = new Pen(
+            hasAppIcon ? Color.FromArgb(230, 255, 255, 255) : Color.FromArgb(150, 255, 255, 255),
+            Math.Max(1.0f, hasAppIcon ? size / 23f : size / 26f));
 
         graphics.FillEllipse(trackBrush, rect);
         if (status.IsError)
@@ -43,7 +51,7 @@ public sealed class TrayIconRenderer : ITrayIconRenderer
 
             if (!string.IsNullOrWhiteSpace(status.Label) && size >= 24)
             {
-                DrawCenteredText(graphics, CenterLabel(status), rect, size, CenterTextColor(status));
+                DrawCenteredText(graphics, CenterLabel(status), rect, size, CenterTextColor(status), hasAppIcon);
             }
         }
         else
@@ -73,9 +81,50 @@ public sealed class TrayIconRenderer : ITrayIconRenderer
         }
     }
 
-    private static void DrawCenteredText(Graphics graphics, string text, RectangleF rect, int size, Color color)
+    private static bool DrawAppIcon(Graphics graphics, int size)
     {
-        using var font = new Font(FontFamily.GenericSansSerif, size >= 32 ? 12.5f : 9.5f, FontStyle.Bold, GraphicsUnit.Pixel);
+        var icon = AppIconBitmap.Value;
+        if (icon is null)
+        {
+            return false;
+        }
+
+        var iconInset = Math.Max(1.0f, size * 0.03f);
+        graphics.DrawImage(icon, new RectangleF(iconInset, iconInset, size - iconInset * 2, size - iconInset * 2));
+        return true;
+    }
+
+    private static Bitmap? LoadAppIconBitmap()
+    {
+        try
+        {
+            var processPath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(processPath) || !File.Exists(processPath))
+            {
+                return null;
+            }
+
+            using var icon = Icon.ExtractAssociatedIcon(processPath);
+            return icon?.ToBitmap();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void DrawCenteredText(
+        Graphics graphics,
+        string text,
+        RectangleF rect,
+        int size,
+        Color color,
+        bool compact = false)
+    {
+        var fontSize = compact
+            ? Math.Max(6.5f, rect.Width * 0.42f)
+            : size >= 32 ? 12.5f : 9.5f;
+        using var font = new Font(FontFamily.GenericSansSerif, fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
         using var shadowBrush = new SolidBrush(Color.FromArgb(110, 0, 0, 0));
         using var textBrush = new SolidBrush(color);
         using var format = new StringFormat
