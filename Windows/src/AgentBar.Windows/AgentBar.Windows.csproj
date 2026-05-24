@@ -11,6 +11,7 @@
     <ApplicationIcon>AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="AppIcon.ico" LogicalName="AgentBar.Windows.AppIcon.ico" />
     <ProjectReference Include="..\AgentBar.Core\AgentBar.Core.csproj" />
   </ItemGroup>
 </Project>
