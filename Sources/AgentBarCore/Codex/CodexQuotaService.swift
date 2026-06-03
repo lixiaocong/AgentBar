@@ -111,12 +111,34 @@ public struct CodexQuotaService: Sendable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let payload = try decoder.decode(CodexUsagePayload.self, from: data)
 
-        guard let rateLimit = payload.rateLimit else {
-            throw CodexQuotaError.noQuotaInResponse
+        var metrics: [AgentQuotaMetric] = []
+        if let rateLimit = payload.rateLimit {
+            metrics.append(contentsOf: rateLimit.metrics())
         }
 
-        let metrics = [rateLimit.primaryWindow?.asMetric, rateLimit.secondaryWindow?.asMetric].compactMap { $0 }
-        guard !metrics.isEmpty else {
+        if let codeReviewRateLimit = payload.codeReviewRateLimit {
+            metrics.append(contentsOf: codeReviewRateLimit.metrics(
+                idPrefix: "code-review",
+                titlePrefix: "Code review"
+            ))
+        }
+
+        for (index, additionalRateLimit) in (payload.additionalRateLimits ?? []).enumerated() {
+            guard let rateLimit = additionalRateLimit.rateLimit else {
+                continue
+            }
+
+            metrics.append(contentsOf: rateLimit.metrics(
+                idPrefix: "additional-\(index + 1)",
+                titlePrefix: additionalRateLimit.displayLabel ?? "Additional limit \(index + 1)"
+            ))
+        }
+
+        metrics = uniqueMetrics(metrics)
+        let rateLimits = ([payload.rateLimit, payload.codeReviewRateLimit] + (payload.additionalRateLimits ?? []).map(\.rateLimit)).compactMap { $0 }
+        let hasQuotaState = rateLimits.contains(where: \.hasQuotaState) || payload.credits?.hasQuotaState == true
+
+        guard !metrics.isEmpty || hasQuotaState else {
             throw CodexQuotaError.noQuotaInResponse
         }
 
@@ -129,10 +151,17 @@ public struct CodexQuotaService: Sendable {
             ),
             planType: payload.planType,
             modelName: nil,
-            sourceSummary: "ChatGPT Codex API",
+            sourceSummary: metrics.isEmpty ? "No active Codex quota windows" : "ChatGPT Codex API",
             metrics: metrics,
             updatedAt: updatedAt
         )
+    }
+
+    private func uniqueMetrics(_ metrics: [AgentQuotaMetric]) -> [AgentQuotaMetric] {
+        var seen = Set<String>()
+        return metrics.filter { metric in
+            seen.insert(metric.id).inserted
+        }
     }
 
     private func loadCredentialsSynchronously(for installation: CodexInstallation) throws -> CodexAuthCredentials {
@@ -561,24 +590,131 @@ private struct CodexWorkspaceSettingsPayload: Decodable {
 private struct CodexUsagePayload: Decodable {
     let planType: String?
     let rateLimit: CodexUsageRateLimit?
+    let codeReviewRateLimit: CodexUsageRateLimit?
+    let additionalRateLimits: [CodexAdditionalRateLimit]?
+    let credits: CodexCreditsSnapshot?
+}
+
+private struct CodexAdditionalRateLimit: Decodable {
+    let limitName: String?
+    let meteredFeature: String?
+    let rateLimit: CodexUsageRateLimit?
+
+    var displayLabel: String? {
+        Self.clean(limitName) ?? Self.clean(meteredFeature).map(Self.formatDisplayToken)
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
+    }
+
+    private static func formatDisplayToken(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .map { word in
+                let lowercased = word.lowercased()
+                if lowercased == "gpt" {
+                    return lowercased.uppercased()
+                }
+
+                return lowercased.prefix(1).uppercased() + lowercased.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+}
+
+private struct CodexCreditsSnapshot: Decodable {
+    let hasCredits: Bool?
+    let unlimited: Bool?
+    let balance: String?
+
+    var hasQuotaState: Bool {
+        hasCredits != nil || unlimited != nil || balance != nil
+    }
 }
 
 private struct CodexUsageRateLimit: Decodable {
+    let allowed: Bool?
+    let limitReached: Bool?
     let primaryWindow: CodexUsageWindow?
     let secondaryWindow: CodexUsageWindow?
+
+    func metrics(idPrefix: String? = nil, titlePrefix: String? = nil) -> [AgentQuotaMetric] {
+        [
+            primaryWindow?.metric(idPrefix: idPrefix, titlePrefix: titlePrefix),
+            secondaryWindow?.metric(idPrefix: idPrefix, titlePrefix: titlePrefix)
+        ].compactMap { $0 }
+    }
+
+    var hasQuotaState: Bool {
+        allowed != nil || limitReached != nil || primaryWindow != nil || secondaryWindow != nil
+    }
 }
 
 private struct CodexUsageWindow: Decodable {
-    let usedPercent: Double
-    let limitWindowSeconds: Int
-    let resetAt: TimeInterval
+    let usedPercent: Double?
+    let limitWindowSeconds: Int?
+    let windowDurationMins: Int?
+    let resetAt: TimeInterval?
+    let resetsAt: TimeInterval?
 
-    var asMetric: AgentQuotaMetric {
-        AgentQuotaMetric.usageWindow(
-            windowMinutes: max(1, (limitWindowSeconds + 59) / 60),
+    func metric(idPrefix: String?, titlePrefix: String?) -> AgentQuotaMetric? {
+        guard let usedPercent,
+              let windowMinutes,
+              let resetAt = resetAt ?? resetsAt,
+              resetAt > 0 else {
+            return nil
+        }
+
+        let windowTitle = Self.windowTitle(for: windowMinutes)
+        let title = titlePrefix.map { "\($0) \(windowTitle)" } ?? windowTitle
+        let id = idPrefix.map { "\($0)-window-\(windowMinutes)" } ?? "window-\(windowMinutes)"
+        return AgentQuotaMetric(
+            id: id,
+            title: title,
             usedPercent: usedPercent,
+            usedLabel: "\(Int(usedPercent.rounded()))% used",
+            remainingLabel: "\(Int(max(0, 100 - usedPercent).rounded()))% left",
             resetsAt: Date(timeIntervalSince1970: resetAt)
         )
+    }
+
+    private var windowMinutes: Int? {
+        if let limitWindowSeconds, limitWindowSeconds > 0 {
+            return max(1, (limitWindowSeconds + 59) / 60)
+        }
+
+        if let windowDurationMins, windowDurationMins > 0 {
+            return windowDurationMins
+        }
+
+        return nil
+    }
+
+    private static func windowTitle(for windowMinutes: Int) -> String {
+        switch windowMinutes {
+        case 60:
+            return "1 hour window"
+        case 300:
+            return "5 hour window"
+        case 1_440:
+            return "24 hour window"
+        case 10_080:
+            return "7 day window"
+        default:
+            if windowMinutes % 1_440 == 0 {
+                return "\(windowMinutes / 1_440) day window"
+            }
+
+            return "\(windowMinutes) minute window"
+        }
     }
 }
 

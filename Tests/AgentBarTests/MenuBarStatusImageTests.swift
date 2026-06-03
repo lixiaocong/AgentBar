@@ -16,6 +16,8 @@ func menuBarStatusImageContainsVisiblePixels() throws {
     let bitmap = try #require(NSBitmapImageRep(data: representation))
     var visiblePixelCount = 0
 
+    #expect(image.size.width < 56)
+
     for x in 0..<bitmap.pixelsWide {
         for y in 0..<bitmap.pixelsHigh {
             guard let color = bitmap.colorAt(x: x, y: y) else { continue }
@@ -40,8 +42,9 @@ func unavailableMenuBarStatusImageMarksErrorAcrossBar() throws {
     let representation = try #require(image.tiffRepresentation)
     let bitmap = try #require(NSBitmapImageRep(data: representation))
     var strongRightSideRedPixels = 0
+    let rightSideStart = Int(Double(bitmap.pixelsWide) * 0.72)
 
-    for x in 46..<bitmap.pixelsWide {
+    for x in rightSideStart..<bitmap.pixelsWide {
         for y in 0..<bitmap.pixelsHigh {
             guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
             if color.alphaComponent > 0.55,

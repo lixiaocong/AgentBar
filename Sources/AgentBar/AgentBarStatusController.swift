@@ -10,6 +10,7 @@ import AgentBarCore
 final class AgentBarStatusController: NSObject {
     private static let popoverMaximumContentSize = CGSize(width: 1440, height: 1040)
     private static let popoverScreenMargin: CGFloat = 80
+    private static let legacyStatusItemAutosaveDefaultsKey = "NSStatusItem Preferred Position AgentBarQuotaStatusItem.v3"
 
     private let model: AppModel
     private let settingsWindowController: AgentBarSettingsWindowController
@@ -32,7 +33,7 @@ final class AgentBarStatusController: NSObject {
     }
 
     private func configureStatusItem() {
-        statusItem.autosaveName = "AgentBarQuotaStatusItem.v3"
+        UserDefaults.standard.removeObject(forKey: Self.legacyStatusItemAutosaveDefaultsKey)
         statusItem.isVisible = true
 
         guard let button = statusItem.button else { return }

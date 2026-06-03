@@ -166,30 +166,22 @@ public struct GitHubCopilotQuotaService: Sendable {
         profile: GitHubUserProfileResponse?,
         updatedAt: Date
     ) -> AgentQuotaSnapshot {
-        let pi = response.quotaSnapshots?.premiumInteractions
         let resetsAt = parseResetDate(response.quotaResetDateUtc, fallback: updatedAt)
 
-        let metric: AgentQuotaMetric
-        if let pi, pi.unlimited == false, let entitlement = pi.entitlement, entitlement > 0 {
-            let remaining = pi.remaining ?? 0
-            let used = max(0, entitlement - remaining)
-            metric = AgentQuotaMetric.cappedUsage(
-                id: "github-copilot-premium-interactions",
-                title: "Premium requests / month",
-                used: used,
-                limit: entitlement,
-                resetsAt: resetsAt
-            )
-        } else {
+        let metrics = response.quotaSnapshots?.metrics(resetsAt: resetsAt) ?? []
+        let visibleMetrics: [AgentQuotaMetric]
+        if metrics.isEmpty {
             // Unlimited or no quota data — show unlimited
-            metric = AgentQuotaMetric(
+            visibleMetrics = [AgentQuotaMetric(
                 id: "github-copilot-premium-interactions",
                 title: "Premium requests / month",
                 usedPercent: 0,
                 usedLabel: "Unlimited",
                 remainingLabel: "Unlimited",
                 resetsAt: resetsAt
-            )
+            )]
+        } else {
+            visibleMetrics = metrics
         }
 
         return AgentQuotaSnapshot(
@@ -202,7 +194,7 @@ public struct GitHubCopilotQuotaService: Sendable {
             planType: response.copilotPlan,
             modelName: nil,
             sourceSummary: "GitHub Copilot API",
-            metrics: [metric],
+            metrics: visibleMetrics,
             updatedAt: updatedAt
         )
     }
@@ -325,12 +317,149 @@ private struct GitHubEmailResponse: Decodable {
 }
 
 private struct GitHubCopilotQuotaSnapshots: Decodable {
-    let premiumInteractions: GitHubCopilotQuotaEntry?
+    let entries: [(key: String, value: GitHubCopilotQuotaEntry)]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        entries = try container.allKeys.map { key in
+            (key.stringValue, try container.decode(GitHubCopilotQuotaEntry.self, forKey: key))
+        }
+        .sorted { lhs, rhs in
+            let leftOrder = Self.displayOrder(for: lhs.key)
+            let rightOrder = Self.displayOrder(for: rhs.key)
+            if leftOrder != rightOrder {
+                return leftOrder < rightOrder
+            }
+
+            return lhs.key < rhs.key
+        }
+    }
+
+    func metrics(resetsAt: Date) -> [AgentQuotaMetric] {
+        entries.compactMap { key, entry in
+            metric(
+                id: "github-copilot-\(Self.idSuffix(for: key))",
+                title: Self.title(for: key),
+                from: entry,
+                resetsAt: resetsAt
+            )
+        }
+    }
+
+    private func metric(
+        id: String,
+        title: String,
+        from entry: GitHubCopilotQuotaEntry,
+        resetsAt: Date
+    ) -> AgentQuotaMetric? {
+        guard let entitlement = entry.entitlement, entitlement > 0 else {
+            return nil
+        }
+
+        let remaining = normalizedRemaining(from: entry, entitlement: entitlement)
+        let used = max(0, entitlement - remaining)
+        return AgentQuotaMetric.cappedUsage(
+            id: id,
+            title: title,
+            used: used,
+            limit: entitlement,
+            resetsAt: resetsAt
+        )
+    }
+
+    private func normalizedRemaining(
+        from entry: GitHubCopilotQuotaEntry,
+        entitlement: Int
+    ) -> Int {
+        if let remaining = entry.remaining {
+            return min(max(remaining, 0), entitlement)
+        }
+
+        if let quotaRemaining = entry.quotaRemaining {
+            return min(max(Int(quotaRemaining.rounded()), 0), entitlement)
+        }
+
+        if let percentRemaining = entry.percentRemaining {
+            let clampedPercent = min(max(percentRemaining, 0), 100)
+            let estimated = (Double(entitlement) * clampedPercent / 100).rounded()
+            return min(max(Int(estimated), 0), entitlement)
+        }
+
+        return 0
+    }
+
+    private static func displayOrder(for key: String) -> Int {
+        switch key {
+        case "chat":
+            return 0
+        case "completions":
+            return 1
+        case "premium_interactions", "premiumInteractions":
+            return 2
+        default:
+            return 100
+        }
+    }
+
+    private static func title(for key: String) -> String {
+        switch key {
+        case "chat":
+            return "Chat messages / month"
+        case "completions":
+            return "Code completions / month"
+        case "premium_interactions", "premiumInteractions":
+            return "Premium requests / month"
+        default:
+            return "\(formatDisplayToken(key)) / month"
+        }
+    }
+
+    private static func idSuffix(for key: String) -> String {
+        key
+            .replacingOccurrences(of: #"([a-z0-9])([A-Z])"#, with: "$1-$2", options: .regularExpression)
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+    }
+
+    private static func formatDisplayToken(_ value: String) -> String {
+        let spaced = value
+            .replacingOccurrences(of: #"([a-z0-9])([A-Z])"#, with: "$1 $2", options: .regularExpression)
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+
+        return spaced
+            .split(separator: " ")
+            .map { word in
+                let lowercased = word.lowercased()
+                if ["api", "cli", "ide"].contains(lowercased) {
+                    return lowercased.uppercased()
+                }
+
+                return lowercased.prefix(1).uppercased() + lowercased.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = nil
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
+    }
 }
 
 private struct GitHubCopilotQuotaEntry: Decodable {
     let remaining: Int?
     let entitlement: Int?
+    let quotaRemaining: Double?
     let percentRemaining: Double?
     let unlimited: Bool?
     let overageCount: Int?

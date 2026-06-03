@@ -93,31 +93,43 @@ public sealed class CodexQuotaService(
         using var document = JsonDocument.Parse(data);
         var root = document.RootElement;
         var planType = root.String("plan_type", "planType");
-        if (!root.TryProperty(out var rateLimit, "rate_limit", "rateLimit"))
+        var metrics = new List<AgentQuotaMetric>();
+        var hasQuotaState = false;
+
+        if (root.TryProperty(out var rateLimit, "rate_limit", "rateLimit"))
         {
-            throw new ProviderQuotaException("The Codex usage API response did not include quota windows.");
+            hasQuotaState |= HasCodexQuotaState(rateLimit);
+            AddCodexRateLimitMetrics(metrics, rateLimit);
         }
 
-        var metrics = new List<AgentQuotaMetric>();
-        foreach (var key in new[] { "primary_window", "primaryWindow", "secondary_window", "secondaryWindow" })
+        if (root.TryProperty(out var codeReviewRateLimit, "code_review_rate_limit", "codeReviewRateLimit"))
         {
-            if (!rateLimit.TryProperty(out var window, key))
-            {
-                continue;
-            }
+            hasQuotaState |= HasCodexQuotaState(codeReviewRateLimit);
+            AddCodexRateLimitMetrics(metrics, codeReviewRateLimit, "code-review", "Code review");
+        }
 
-            var usedPercent = window.Number("used_percent", "usedPercent") ?? 0;
-            var seconds = (int)(window.Number("limit_window_seconds", "limitWindowSeconds") ?? 0);
-            var resetAt = window.Number("reset_at", "resetAt") ?? 0;
-            if (seconds <= 0 || resetAt <= 0)
+        if (root.TryProperty(out var additionalRateLimits, "additional_rate_limits", "additionalRateLimits")
+            && additionalRateLimits.ValueKind == JsonValueKind.Array)
+        {
+            var index = 0;
+            foreach (var additionalRateLimit in additionalRateLimits.EnumerateArray())
             {
-                continue;
+                if (additionalRateLimit.TryProperty(out var nestedRateLimit, "rate_limit", "rateLimit"))
+                {
+                    index++;
+                    hasQuotaState |= HasCodexQuotaState(nestedRateLimit);
+                    AddCodexRateLimitMetrics(
+                        metrics,
+                        nestedRateLimit,
+                        $"additional-{index}",
+                        CodexAdditionalRateLimitDisplayLabel(additionalRateLimit) ?? $"Additional limit {index}");
+                }
             }
+        }
 
-            metrics.Add(AgentQuotaMetric.UsageWindow(
-                Math.Max(1, (seconds + 59) / 60),
-                usedPercent,
-                DateTimeOffset.FromUnixTimeSeconds((long)resetAt)));
+        if (root.TryProperty(out var credits, "credits"))
+        {
+            hasQuotaState |= HasCodexCreditsState(credits);
         }
 
         metrics = metrics
@@ -125,7 +137,7 @@ public sealed class CodexQuotaService(
             .Select(group => group.First())
             .ToList();
 
-        if (metrics.Count == 0)
+        if (metrics.Count == 0 && !hasQuotaState)
         {
             throw new ProviderQuotaException("The Codex usage API response did not include 5-hour or weekly quota windows.");
         }
@@ -136,10 +148,96 @@ public sealed class CodexQuotaService(
             DisplaySpaceLabel(spaceLabel, planType),
             planType,
             null,
-            "ChatGPT Codex API",
+            metrics.Count == 0 ? "No active Codex quota windows" : "ChatGPT Codex API",
             metrics,
             updatedAt);
     }
+
+    private static void AddCodexRateLimitMetrics(
+        List<AgentQuotaMetric> metrics,
+        JsonElement rateLimit,
+        string? idPrefix = null,
+        string? titlePrefix = null)
+    {
+        foreach (var key in new[] { "primary_window", "primaryWindow", "secondary_window", "secondaryWindow" })
+        {
+            if (!rateLimit.TryProperty(out var window, key)
+                || TryBuildCodexUsageWindow(window, idPrefix, titlePrefix) is not { } metric)
+            {
+                continue;
+            }
+
+            metrics.Add(metric);
+        }
+    }
+
+    private static AgentQuotaMetric? TryBuildCodexUsageWindow(
+        JsonElement window,
+        string? idPrefix = null,
+        string? titlePrefix = null)
+    {
+        if (window.ValueKind != JsonValueKind.Object
+            || window.Number("used_percent", "usedPercent") is not { } usedPercent
+            || CodexWindowMinutes(window) is not { } windowMinutes
+            || window.Number("reset_at", "resetAt", "resets_at", "resetsAt") is not { } resetAt
+            || resetAt <= 0)
+        {
+            return null;
+        }
+
+        var windowTitle = CodexWindowTitle(windowMinutes);
+        return new AgentQuotaMetric(
+            idPrefix is null ? $"window-{windowMinutes}" : $"{idPrefix}-window-{windowMinutes}",
+            titlePrefix is null ? windowTitle : $"{titlePrefix} {windowTitle}",
+            usedPercent,
+            $"{Math.Round(usedPercent):0}% used",
+            $"{Math.Round(Math.Max(0, 100 - usedPercent)):0}% left",
+            DateTimeOffset.FromUnixTimeSeconds((long)resetAt));
+    }
+
+    private static int? CodexWindowMinutes(JsonElement window)
+    {
+        if (window.Number("limit_window_seconds", "limitWindowSeconds") is { } seconds && seconds > 0)
+        {
+            return Math.Max(1, ((int)seconds + 59) / 60);
+        }
+
+        if (window.Number("window_duration_mins", "windowDurationMins") is { } minutes && minutes > 0)
+        {
+            return (int)minutes;
+        }
+
+        return null;
+    }
+
+    private static string CodexWindowTitle(int windowMinutes) => windowMinutes switch
+    {
+        60 => "1 hour window",
+        300 => "5 hour window",
+        1_440 => "24 hour window",
+        10_080 => "7 day window",
+        _ when windowMinutes % 1_440 == 0 => $"{windowMinutes / 1_440} day window",
+        _ => $"{windowMinutes} minute window"
+    };
+
+    private static string? CodexAdditionalRateLimitDisplayLabel(JsonElement additionalRateLimit)
+    {
+        return Clean(additionalRateLimit.CleanString("limit_name", "limitName"))
+            ?? FormatDisplayToken(Clean(additionalRateLimit.CleanString("metered_feature", "meteredFeature")));
+    }
+
+    private static bool HasCodexQuotaState(JsonElement rateLimit) =>
+        rateLimit.ValueKind == JsonValueKind.Object
+        && (rateLimit.TryProperty(out _, "allowed")
+            || rateLimit.TryProperty(out _, "limit_reached", "limitReached")
+            || rateLimit.TryProperty(out _, "primary_window", "primaryWindow")
+            || rateLimit.TryProperty(out _, "secondary_window", "secondaryWindow"));
+
+    private static bool HasCodexCreditsState(JsonElement credits) =>
+        credits.ValueKind == JsonValueKind.Object
+        && (credits.TryProperty(out _, "has_credits", "hasCredits")
+            || credits.TryProperty(out _, "unlimited")
+            || credits.TryProperty(out _, "balance"));
 
     public string? DecodeWorkspaceDisplayName(byte[] data)
     {
@@ -356,6 +454,16 @@ public sealed class CodexQuotaService(
     private static string? Clean(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static string? FormatDisplayToken(string? value)
+    {
+        if (Clean(value) is not { } clean)
+        {
+            return null;
+        }
+
+        return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(clean.Replace("_", " ").Replace("-", " "));
+    }
+
     private static string Masked(string value) =>
         value.Length <= 8 ? value : $"{value[..4]}...{value[^4..]}";
 
@@ -413,32 +521,34 @@ public sealed class GitHubCopilotQuotaService(
     {
         using var document = JsonDocument.Parse(data);
         var root = document.RootElement;
-        var quota = root.OptionalObject("quota_snapshots", "quotaSnapshots").OptionalObject("premium_interactions", "premiumInteractions");
+        var quotaSnapshots = root.OptionalObject("quota_snapshots", "quotaSnapshots");
         var resetAt = ParseResetDate(root.CleanString("quota_reset_date_utc", "quotaResetDateUtc"), updatedAt);
-        AgentQuotaMetric metric;
-        if (quota.ValueKind == JsonValueKind.Object
-            && quota.Bool("unlimited") != true
-            && quota.Number("entitlement") is { } entitlement
-            && entitlement > 0)
+        var metrics = quotaSnapshots.ValueKind == JsonValueKind.Object
+            ? quotaSnapshots
+                .EnumerateObject()
+                .OrderBy(property => CopilotQuotaDisplayOrder(property.Name))
+                .ThenBy(property => property.Name, StringComparer.Ordinal)
+                .Select(property => CopilotQuotaMetric(
+                    $"github-copilot-{CopilotQuotaIdSuffix(property.Name)}",
+                    CopilotQuotaTitle(property.Name),
+                    property.Value,
+                    resetAt))
+                .OfType<AgentQuotaMetric>()
+                .ToArray()
+            : [];
+
+        if (metrics.Length == 0)
         {
-            var remaining = (int)(quota.Number("remaining") ?? 0);
-            var limit = (int)entitlement;
-            metric = AgentQuotaMetric.CappedUsage(
-                "github-copilot-premium-interactions",
-                "Premium requests / month",
-                Math.Max(0, limit - remaining),
-                limit,
-                resetAt);
-        }
-        else
-        {
-            metric = new AgentQuotaMetric(
+            metrics =
+            [
+                new AgentQuotaMetric(
                 "github-copilot-premium-interactions",
                 "Premium requests / month",
                 0,
                 "Unlimited",
                 "Unlimited",
-                resetAt);
+                resetAt)
+            ];
         }
 
         return new AgentQuotaSnapshot(
@@ -451,9 +561,74 @@ public sealed class GitHubCopilotQuotaService(
             root.CleanString("copilot_plan", "copilotPlan"),
             null,
             "GitHub Copilot API",
-            [metric],
+            metrics,
             updatedAt);
     }
+
+    private static AgentQuotaMetric? CopilotQuotaMetric(
+        string id,
+        string title,
+        JsonElement quota,
+        DateTimeOffset resetAt)
+    {
+        if (quota.ValueKind != JsonValueKind.Object
+            || quota.Number("entitlement") is not { } entitlement
+            || entitlement <= 0)
+        {
+            return null;
+        }
+
+        var limit = (int)Math.Round(entitlement);
+        var remaining = NormalizedCopilotRemaining(quota, limit);
+        return AgentQuotaMetric.CappedUsage(
+            id,
+            title,
+            Math.Max(0, limit - remaining),
+            limit,
+            resetAt);
+    }
+
+    private static int NormalizedCopilotRemaining(JsonElement quota, int limit)
+    {
+        if (quota.Number("remaining") is { } remaining)
+        {
+            return Math.Clamp((int)Math.Round(remaining), 0, limit);
+        }
+
+        if (quota.Number("quota_remaining", "quotaRemaining") is { } quotaRemaining)
+        {
+            return Math.Clamp((int)Math.Round(quotaRemaining), 0, limit);
+        }
+
+        if (quota.Number("percent_remaining", "percentRemaining") is { } percentRemaining)
+        {
+            var clampedPercent = Math.Clamp(percentRemaining, 0, 100);
+            return Math.Clamp((int)Math.Round(limit * clampedPercent / 100), 0, limit);
+        }
+
+        return 0;
+    }
+
+    private static int CopilotQuotaDisplayOrder(string key) => key switch
+    {
+        "chat" => 0,
+        "completions" => 1,
+        "premium_interactions" or "premiumInteractions" => 2,
+        _ => 100
+    };
+
+    private static string CopilotQuotaTitle(string key) => key switch
+    {
+        "chat" => "Chat messages / month",
+        "completions" => "Code completions / month",
+        "premium_interactions" or "premiumInteractions" => "Premium requests / month",
+        _ => $"{FormatDisplayToken(key)} / month"
+    };
+
+    private static string CopilotQuotaIdSuffix(string key) =>
+        Regex.Replace(key, "([a-z0-9])([A-Z])", "$1-$2")
+            .Replace("_", "-")
+            .ToLowerInvariant();
 
     private async Task<GitHubProfile?> LoadProfileAsync(string token, CancellationToken cancellationToken)
     {
@@ -524,6 +699,15 @@ public sealed class GitHubCopilotQuotaService(
 
     private static string? Clean(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string FormatDisplayToken(string value)
+    {
+        var spaced = Regex.Replace(value, "([a-z0-9])([A-Z])", "$1 $2")
+            .Replace("_", " ")
+            .Replace("-", " ");
+
+        return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(spaced);
+    }
 }
 
 public sealed record GitHubProfile(string? Login, string? Email, string? Name);
@@ -580,11 +764,6 @@ public sealed class GeminiQuotaService(
                 var modelId = bucket.CleanString("modelId") ?? "unknown";
                 var remainingFraction = Math.Clamp(bucket.Number("remainingFraction") ?? 0, 0, 1);
                 var reset = ParseIso(bucket.CleanString("resetTime"));
-                if (remainingFraction <= 0 && reset is { } resetDate && resetDate.ToUnixTimeSeconds() < 100)
-                {
-                    continue;
-                }
-
                 var usedPercent = (1 - remainingFraction) * 100;
                 var remainingAmount = bucket.CleanString("remainingAmount") is { } rawAmount && int.TryParse(rawAmount, out var parsedAmount)
                     ? parsedAmount
@@ -609,7 +788,7 @@ public sealed class GeminiQuotaService(
                 }
 
                 metrics.Add(new AgentQuotaMetric(
-                    $"gemini-{modelId}",
+                    modelId,
                     FormatModelName(modelId),
                     usedPercent,
                     usedLabel,
@@ -625,7 +804,7 @@ public sealed class GeminiQuotaService(
             TierLabel(tierId, tierName),
             null,
             "Google Cloud Code Assist API",
-            metrics,
+            metrics.ToArray(),
             updatedAt);
     }
 
@@ -973,11 +1152,11 @@ public sealed class JunieQuotaService(
         var accountLabel = root.CleanString("username") ?? accountLabelFallback;
         var licenseType = root.CleanString("licenseType", "license_type");
         var planType = CleanPlanLabel(licenseType);
-        var balanceLeft = NormalizedBalance(quota?.Current ?? root.Number("balanceLeft", "balance_left"));
+        var balanceLeft = NormalizedBalance(root.Number("balanceLeft", "balance_left") ?? quota?.Current);
         var total = NormalizedBalance(quota?.Maximum ?? root.Number("balanceTotal", "balanceMaximum", "quotaTotal", "quotaMaximum", "subscriptionTotal"));
         total ??= InferSubscriptionTotal(root, balanceLeft);
         var isMonthlyCredits = quota?.Source == JunieQuotaSource.AiAssistantCache || string.Equals(licenseType, "AIP", StringComparison.OrdinalIgnoreCase);
-        var metrics = BuildMetrics(balanceLeft, total, quota?.ResetsAt, isMonthlyCredits);
+        var metrics = BuildMetrics(balanceLeft, total, quota?.ResetsAt, isMonthlyCredits, quota?.AdditionalQuotas);
         var balance = BalanceLabel(root, balanceLeft, total, isMonthlyCredits);
         var summary = $"{(root.Bool("active") == false ? "Inactive" : "Active")}{(balance is null ? "" : $" - {balance}")}";
 
@@ -1027,9 +1206,31 @@ public sealed class JunieQuotaService(
             maximum ??= refillDocument.RootElement.OptionalObject("tariff").Number("amount");
         }
 
+        var additionalQuotas = new List<JunieNamedQuota>();
+        var topUpQuota = quotaRoot.OptionalObject("topUpQuota");
+        if (topUpQuota.ValueKind == JsonValueKind.Object)
+        {
+            var topUpCurrent = topUpQuota.Number("available");
+            var topUpMaximum = topUpQuota.Number("maximum");
+            if (topUpCurrent is null && topUpQuota.Number("current") is { } topUpSpent && topUpMaximum is { } topUpMax)
+            {
+                topUpCurrent = Math.Max(0, topUpMax - topUpSpent);
+            }
+
+            if (topUpMaximum is > 0)
+            {
+                additionalQuotas.Add(new JunieNamedQuota(
+                    "junie-top-up-credits",
+                    "Top-up credits",
+                    topUpCurrent,
+                    topUpMaximum,
+                    resetsAt));
+            }
+        }
+
         return current is null && maximum is null
             ? null
-            : new JunieQuotaDetails(current, maximum, resetsAt, JunieQuotaSource.AiAssistantCache);
+            : new JunieQuotaDetails(current, maximum, resetsAt, JunieQuotaSource.AiAssistantCache, additionalQuotas);
     }
 
     private async Task<byte[]> SendJunieAsync(
@@ -1117,19 +1318,20 @@ public sealed class JunieQuotaService(
             : new JunieQuotaDetails(current, maximum, null, JunieQuotaSource.QuotaEndpoint);
     }
 
-    private static IReadOnlyList<AgentQuotaMetric> BuildMetrics(double? left, double? total, DateTimeOffset? resetsAt, bool isMonthlyCredits)
+    private static IReadOnlyList<AgentQuotaMetric> BuildMetrics(
+        double? left,
+        double? total,
+        DateTimeOffset? resetsAt,
+        bool isMonthlyCredits,
+        IReadOnlyList<JunieNamedQuota>? additionalQuotas)
     {
-        if (left is null || total is null || total <= 0)
+        var metrics = new List<AgentQuotaMetric>();
+        if (left is not null && total is not null && total > 0)
         {
-            return [];
-        }
-
-        var cappedLeft = Math.Clamp(left.Value, 0, total.Value);
-        var used = Math.Max(0, total.Value - cappedLeft);
-        var usedPercent = Math.Clamp(used / total.Value * 100, 0, 100);
-        return
-        [
-            new AgentQuotaMetric(
+            var cappedLeft = Math.Clamp(left.Value, 0, total.Value);
+            var used = Math.Max(0, total.Value - cappedLeft);
+            var usedPercent = Math.Clamp(used / total.Value * 100, 0, 100);
+            metrics.Add(new AgentQuotaMetric(
                 "junie-subscription-quota",
                 isMonthlyCredits ? "Monthly credits" : "Subscription quota",
                 usedPercent,
@@ -1137,8 +1339,39 @@ public sealed class JunieQuotaService(
                 isMonthlyCredits
                     ? RemainingMonthlyCreditsLabel(Math.Max(left.Value, 0), total.Value)
                     : RemainingCurrencyLabel(Math.Max(left.Value, 0), total.Value),
-                resetsAt)
-        ];
+                resetsAt));
+        }
+
+        foreach (var additionalQuota in additionalQuotas ?? [])
+        {
+            if (BuildAdditionalQuotaMetric(additionalQuota) is { } metric)
+            {
+                metrics.Add(metric);
+            }
+        }
+
+        return metrics;
+    }
+
+    private static AgentQuotaMetric? BuildAdditionalQuotaMetric(JunieNamedQuota quota)
+    {
+        var left = NormalizedBalance(quota.Current);
+        var total = NormalizedBalance(quota.Maximum);
+        if (left is null || total is null || total <= 0)
+        {
+            return null;
+        }
+
+        var cappedLeft = Math.Clamp(left.Value, 0, total.Value);
+        var used = Math.Max(0, total.Value - cappedLeft);
+        var usedPercent = Math.Clamp(used / total.Value * 100, 0, 100);
+        return new AgentQuotaMetric(
+            quota.Id,
+            quota.Title,
+            usedPercent,
+            $"{FormatCreditAmount(used)} used",
+            RemainingCreditsLabel(Math.Max(left.Value, 0), total.Value),
+            quota.ResetsAt);
     }
 
     private static string? BalanceLabel(JsonElement root, double? left, double? total, bool isMonthlyCredits)
@@ -1202,6 +1435,9 @@ public sealed class JunieQuotaService(
     private static string RemainingMonthlyCreditsLabel(double left, double? total) =>
         total is { } max && max > 0 ? $"{FormatCreditAmount(left)} / {FormatCreditAmount(max)} monthly credits left" : $"{FormatCreditAmount(left)} monthly credits left";
 
+    private static string RemainingCreditsLabel(double left, double? total) =>
+        total is { } max && max > 0 ? $"{FormatCreditAmount(left)} / {FormatCreditAmount(max)} credits left" : $"{FormatCreditAmount(left)} credits left";
+
     private static bool IsDollarLikeUnit(string? value) =>
         value is not null && new[] { "credit", "credits", "usd", "dollar", "dollars" }.Contains(value.Trim().ToLowerInvariant());
 
@@ -1220,7 +1456,19 @@ public sealed class JunieQuotaService(
             : null;
 }
 
-public sealed record JunieQuotaDetails(double? Current, double? Maximum, DateTimeOffset? ResetsAt, JunieQuotaSource Source);
+public sealed record JunieQuotaDetails(
+    double? Current,
+    double? Maximum,
+    DateTimeOffset? ResetsAt,
+    JunieQuotaSource Source,
+    IReadOnlyList<JunieNamedQuota>? AdditionalQuotas = null);
+
+public sealed record JunieNamedQuota(
+    string Id,
+    string Title,
+    double? Current,
+    double? Maximum,
+    DateTimeOffset? ResetsAt);
 
 public enum JunieQuotaSource
 {

@@ -223,7 +223,7 @@ struct AgentBarDesktopWidgetView: View {
     private func providerContent(_ state: AgentWidgetProviderState) -> some View {
         let metrics = displayMetrics(for: state)
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             header(state)
 
             if let error = state.errorMessage {
@@ -233,8 +233,10 @@ struct AgentBarDesktopWidgetView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             } else if !metrics.isEmpty {
-                ForEach(metrics.prefix(3)) { metric in
-                    metricCard(metric)
+                metricsStack(Array(metrics.prefix(2)))
+
+                if let snapshot = state.snapshot {
+                    widgetFooter(snapshot)
                 }
             } else if let snapshot = state.snapshot {
                 HStack(spacing: 8) {
@@ -263,50 +265,92 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func header(_ state: AgentWidgetProviderState) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(state.provider.title)
-                .font(.system(.title3, design: .rounded).weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
+        let style = providerStyle(for: state.provider)
 
-            if let accountLabel = AgentBarWidgetAccountValue.accountSubtitle(for: state) {
-                Text(accountLabel)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(palette.secondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+        return HStack(alignment: .center, spacing: 8) {
+            providerIconBadge(style)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(state.provider.title)
+                        .font(.system(.headline, design: .rounded).weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+
+                    if let plan = userFacingPlanLabel(state.snapshot?.planType) {
+                        detailPill(label: "", value: plan)
+                    }
+                }
+
+                if let accountLabel = AgentBarWidgetAccountValue.accountSubtitle(for: state) {
+                    Text(accountLabel)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(palette.secondaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            Circle()
+                .fill(style.tint)
+                .frame(width: 7, height: 7)
+        }
+    }
+
+    @ViewBuilder
+    private func metricsStack(_ metrics: [AgentQuotaMetric]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(metrics.enumerated()), id: \.element.id) { index, metric in
+                if index > 0 {
+                    Divider()
+                        .opacity(0.32)
+                }
+
+                metricRow(metric)
             }
         }
     }
 
-    private func metricCard(_ metric: AgentQuotaMetric) -> some View {
+    private func metricRow(_ metric: AgentQuotaMetric) -> some View {
         let tint = quotaTint(for: metric)
 
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(metric.title)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                QuotaMetricTitle(title: metric.title)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(palette.secondaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .help(metric.title)
 
-                quotaBar(value: metric.remainingPercent, tint: tint)
+                Text(compactRemainingLabel(metric.remainingLabel))
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(3)
             }
 
-            Text(metric.remainingLabel)
-                .font(.system(.caption, design: .rounded).weight(.bold))
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .fixedSize()
+            quotaBar(value: metric.remainingPercent, tint: tint)
+
+            HStack(spacing: 8) {
+                Text(metric.usedLabel)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if let resetsAt = metric.resetsAt {
+                    Text("Reset \(resetsAt.formatted(date: .omitted, time: .shortened))")
+                        .lineLimit(1)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(palette.secondaryText)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(tint.opacity(colorScheme == .dark ? 0.18 : 0.10))
-        )
     }
 
     private func quotaBar(value: Double, tint: Color) -> some View {
@@ -322,20 +366,41 @@ struct AgentBarDesktopWidgetView: View {
                     .frame(width: max(3, proxy.size.width * progress))
             }
         }
-        .frame(height: 6)
+        .frame(height: 5)
     }
 
     private func detailPill(label: String, value: String) -> some View {
         HStack(spacing: 5) {
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(palette.secondaryText)
+            if !label.isEmpty {
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(palette.secondaryText)
+            }
             Text(value)
                 .font(.system(.caption2, design: .monospaced))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(palette.pillBackground, in: Capsule())
+    }
+
+    private func widgetFooter(_ snapshot: AgentQuotaSnapshot) -> some View {
+        HStack(spacing: 6) {
+            Text("Updated")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(palette.secondaryText)
+
+            Text(snapshot.updatedAt.formatted(date: .omitted, time: .shortened))
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(palette.secondaryText)
+
+            Spacer(minLength: 0)
+
+            Text("AgentBar")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(palette.secondaryText)
+        }
+        .padding(.top, 1)
     }
 
     private func snapshotContext(
@@ -361,6 +426,19 @@ struct AgentBarDesktopWidgetView: View {
         }
 
         return trimmed
+    }
+
+    private func userFacingPlanLabel(_ value: String?) -> String? {
+        guard let trimmed = trimmedDetailValue(value) else {
+            return nil
+        }
+
+        switch trimmed.lowercased() {
+        case "prolite":
+            return nil
+        default:
+            return trimmed
+        }
     }
 
     private func emptyState(title: String, message: String) -> some View {
@@ -413,8 +491,53 @@ struct AgentBarDesktopWidgetView: View {
         quotaTint(for: metric.remainingPercent)
     }
 
+    private func compactRemainingLabel(_ label: String) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = trimmed.lowercased()
+        let normalized = trimmed.replacingOccurrences(of: " / ", with: "/")
+
+        if lowercased.hasSuffix(" monthly credits left") {
+            return normalized.replacingOccurrences(
+                of: " monthly credits left",
+                with: " left",
+                options: [.caseInsensitive]
+            )
+        }
+
+        return normalized
+    }
+
     private func quotaTint(for remainingPercent: Double) -> Color {
         Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
+    }
+
+    private func providerIconBadge(_ style: WidgetProviderStyle) -> some View {
+        Image(style.assetName)
+            .resizable()
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(width: 18, height: 18)
+            .frame(width: 28, height: 28)
+            .background(palette.pillBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(style.tint.opacity(0.20), lineWidth: 1)
+            }
+    }
+
+    private func providerStyle(for provider: AgentProviderKind) -> WidgetProviderStyle {
+        switch provider {
+        case .codex:
+            return WidgetProviderStyle(assetName: "ProviderLogoCodex", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.warning))
+        case .githubCopilot:
+            return WidgetProviderStyle(assetName: "ProviderLogoCopilot", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.healthy))
+        case .gemini:
+            return WidgetProviderStyle(assetName: "ProviderLogoGemini", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.healthy))
+        case .claude:
+            return WidgetProviderStyle(assetName: "ProviderLogoClaude", tint: Color.purple)
+        case .junie:
+            return WidgetProviderStyle(assetName: "ProviderLogoJunie", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.low))
+        }
     }
 
     private var widgetBackground: some View {
@@ -445,6 +568,56 @@ private extension Color {
     init(agentQuotaRGB rgb: AgentQuotaDisplayRGB) {
         self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
+}
+
+private struct QuotaMetricTitle: View {
+    let title: String
+
+    var body: some View {
+        if let parts = Self.windowTitleParts(from: title) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                if let prefix = parts.prefix {
+                    Text(prefix)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(minWidth: 0)
+                }
+
+                Text(parts.suffix)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+            }
+        } else {
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    private static func windowTitleParts(from title: String) -> (prefix: String?, suffix: String)? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = windowSuffixPattern.firstMatch(in: trimmed, range: range),
+              let suffixRange = Range(match.range, in: trimmed) else {
+            return nil
+        }
+
+        let suffix = String(trimmed[suffixRange])
+        let prefix = String(trimmed[..<suffixRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (prefix.isEmpty ? nil : prefix, suffix)
+    }
+
+    private static let windowSuffixPattern = try! NSRegularExpression(
+        pattern: #"\b\d+\s+(?:minute|hour|day|week|month)s?\s+window$"#,
+        options: [.caseInsensitive]
+    )
+}
+
+private struct WidgetProviderStyle {
+    let assetName: String
+    let tint: Color
 }
 
 private struct WidgetPalette {
