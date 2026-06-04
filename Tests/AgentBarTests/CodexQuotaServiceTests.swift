@@ -133,6 +133,148 @@ func codexDisplaysPersonalProPlanLabel() throws {
 }
 
 @Test
+func codexIgnoresZeroDurationPlaceholderWindows() throws {
+    let payload = """
+    {
+      "plan_type": "prolite",
+      "rate_limit": {
+        "allowed": true,
+        "limit_reached": false,
+        "primary_window": {
+          "used_percent": 0,
+          "limit_window_seconds": 0,
+          "reset_after_seconds": 0,
+          "reset_at": 1780463229
+        },
+        "secondary_window": null
+      },
+      "additional_rate_limits": [
+        {
+          "limit_name": "GPT-5.3-Codex-Spark",
+          "metered_feature": "codex_bengalfox",
+          "rate_limit": {
+            "allowed": true,
+            "limit_reached": false,
+            "primary_window": {
+              "used_percent": 0,
+              "limit_window_seconds": 0,
+              "reset_after_seconds": 0,
+              "reset_at": 1780463229
+            },
+            "secondary_window": null
+          }
+        }
+      ],
+      "credits": {
+        "has_credits": false,
+        "unlimited": false,
+        "balance": "0"
+      }
+    }
+    """
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "Account test",
+        spaceLabel: "Personal",
+        updatedAt: Date(timeIntervalSince1970: 1775600000)
+    )
+
+    #expect(snapshot.planType == "prolite")
+    #expect(snapshot.spaceLabel == "Personal Pro")
+    #expect(snapshot.sourceSummary == "No active Codex quota windows")
+    #expect(snapshot.metrics.isEmpty)
+}
+
+@Test
+func codexDecodesWindowDurationMinutePayloads() throws {
+    let payload = """
+    {
+      "plan_type": "prolite",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 25,
+          "window_duration_mins": 300,
+          "resets_at": 1780463229
+        }
+      }
+    }
+    """
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "Account test",
+        spaceLabel: "Personal",
+        updatedAt: Date(timeIntervalSince1970: 1775600000)
+    )
+
+    #expect(snapshot.metrics.count == 1)
+    #expect(snapshot.metrics.first?.title == "5 hour window")
+    #expect(snapshot.metrics.first?.usedPercent == 25)
+    #expect(snapshot.metrics.first?.remainingLabel == "75% left")
+}
+
+@Test
+func codexDisplaysAdditionalRateLimitWindowsIndependently() throws {
+    let payload = """
+    {
+      "plan_type": "prolite",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 12,
+          "limit_window_seconds": 18000,
+          "reset_at": 1780517499
+        },
+        "secondary_window": {
+          "used_percent": 54,
+          "limit_window_seconds": 604800,
+          "reset_at": 1780846287
+        }
+      },
+      "additional_rate_limits": [
+        {
+          "limit_name": "GPT-5.3-Codex-Spark",
+          "metered_feature": "codex_bengalfox",
+          "rate_limit": {
+            "primary_window": {
+              "used_percent": 7,
+              "limit_window_seconds": 18000,
+              "reset_at": 1780518342
+            },
+            "secondary_window": {
+              "used_percent": 9,
+              "limit_window_seconds": 604800,
+              "reset_at": 1781105142
+            }
+          }
+        }
+      ]
+    }
+    """
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "Account test",
+        spaceLabel: "Personal",
+        updatedAt: Date(timeIntervalSince1970: 1775600000)
+    )
+
+    #expect(snapshot.metrics.map(\.id) == [
+        "window-300",
+        "window-10080",
+        "additional-1-window-300",
+        "additional-1-window-10080"
+    ])
+    #expect(snapshot.metrics.map(\.title) == [
+        "5 hour window",
+        "7 day window",
+        "GPT-5.3-Codex-Spark 5 hour window",
+        "GPT-5.3-Codex-Spark 7 day window"
+    ])
+    #expect(snapshot.metrics.map(\.usedPercent) == [12, 54, 7, 9])
+}
+
+@Test
 func rejectsUsagePayloadWithoutQuotaWindows() throws {
     let payload = """
     {

@@ -320,33 +320,29 @@ public struct GeminiQuotaService: Sendable {
         accountLabel: String,
         updatedAt: Date
     ) -> AgentQuotaSnapshot {
-        let buckets = (quota.buckets ?? []).filter { $0.tokenType == "REQUESTS" }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let fallbackFormatter = ISO8601DateFormatter()
 
-        let metrics: [AgentQuotaMetric] = buckets.compactMap { bucket in
+        let metrics = (quota.buckets ?? []).compactMap { bucket -> AgentQuotaMetric? in
+            guard bucket.tokenType == "REQUESTS" else { return nil }
+
             let modelId = bucket.modelId ?? "unknown"
-            let remainingFraction = bucket.remainingFraction ?? 0
-
-            // Skip models with epoch reset time and 0 remaining — not available on this tier
-            if remainingFraction <= 0 {
-                if let resetStr = bucket.resetTime,
-                   let resetDate = formatter.date(from: resetStr) ?? fallbackFormatter.date(from: resetStr),
-                   resetDate.timeIntervalSince1970 < 100 {
-                    return nil
-                }
-            }
-
-            let usedPercent = (1.0 - min(max(remainingFraction, 0), 1.0)) * 100.0
+            let remainingFraction = min(max(bucket.remainingFraction ?? 0, 0), 1)
+            let resetDate: Date? = {
+                guard let resetStr = bucket.resetTime else { return nil }
+                return formatter.date(from: resetStr) ?? fallbackFormatter.date(from: resetStr)
+            }()
 
             let resetsAt: Date? = {
-                guard let resetStr = bucket.resetTime else { return nil }
-                let d = formatter.date(from: resetStr) ?? fallbackFormatter.date(from: resetStr)
                 // Ignore epoch dates (1970)
-                if let d, d.timeIntervalSince1970 < 100 { return nil }
-                return d
+                if let resetDate, resetDate.timeIntervalSince1970 >= 100 {
+                    return resetDate
+                }
+                return nil
             }()
+
+            let usedPercent = (1.0 - remainingFraction) * 100.0
 
             let remainingAmount = bucket.remainingAmount.flatMap { Int($0) }
 
@@ -366,7 +362,7 @@ public struct GeminiQuotaService: Sendable {
             }
 
             return AgentQuotaMetric(
-                id: "gemini-\(modelId)",
+                id: modelId,
                 title: formatModelName(modelId),
                 usedPercent: usedPercent,
                 usedLabel: usedLabel,

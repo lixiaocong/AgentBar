@@ -232,11 +232,13 @@ public struct JunieQuotaService: Sendable {
     }
 
     private func subscriptionMetrics(from response: JunieAuthInfoResponse, quotaDetails: JunieQuotaDetails?) -> [AgentQuotaMetric] {
-        guard let metric = subscriptionMetric(from: response, quotaDetails: quotaDetails) else {
-            return []
+        var metrics: [AgentQuotaMetric] = []
+        if let metric = subscriptionMetric(from: response, quotaDetails: quotaDetails) {
+            metrics.append(metric)
         }
 
-        return [metric]
+        metrics.append(contentsOf: quotaDetails?.additionalQuotas.compactMap(additionalQuotaMetric) ?? [])
+        return metrics
     }
 
     private func subscriptionMetric(from response: JunieAuthInfoResponse, quotaDetails: JunieQuotaDetails?) -> AgentQuotaMetric? {
@@ -263,8 +265,33 @@ public struct JunieQuotaService: Sendable {
         )
     }
 
+    private func additionalQuotaMetric(from quota: JunieNamedQuota) -> AgentQuotaMetric? {
+        guard let rawLeft = quota.quota.current?.value,
+              let rawTotal = quota.quota.maximum?.value else {
+            return nil
+        }
+        let left = normalizedCurrencyAmount(rawLeft)
+        let total = normalizedCurrencyAmount(rawTotal)
+        guard total > 0 else {
+            return nil
+        }
+
+        let cappedLeft = Swift.min(Swift.max(left, 0), total)
+        let used = Swift.max(0, total - cappedLeft)
+        let usedPercent = Swift.min(Swift.max((used / total) * 100, 0), 100)
+
+        return AgentQuotaMetric(
+            id: quota.id,
+            title: quota.title,
+            usedPercent: usedPercent,
+            usedLabel: "\(formatCreditAmount(used)) used",
+            remainingLabel: remainingCreditsLabel(left: max(left, 0), total: total),
+            resetsAt: quota.resetsAt
+        )
+    }
+
     private func normalizedBalanceLeft(from response: JunieAuthInfoResponse, quotaDetails: JunieQuotaDetails?) -> Double? {
-        (quotaDetails?.quota.current?.value ?? response.balanceLeft).map(normalizedCurrencyAmount)
+        (response.balanceLeft ?? quotaDetails?.quota.current?.value).map(normalizedCurrencyAmount)
     }
 
     private func normalizedQuotaTotal(
@@ -331,6 +358,14 @@ public struct JunieQuotaService: Sendable {
         }
 
         return "\(formatCreditAmount(max(left, 0))) / \(formatCreditAmount(total)) monthly credits left"
+    }
+
+    private func remainingCreditsLabel(left: Double, total: Double?) -> String {
+        guard let total, total > 0 else {
+            return "\(formatCreditAmount(max(left, 0))) credits left"
+        }
+
+        return "\(formatCreditAmount(max(left, 0))) / \(formatCreditAmount(total)) credits left"
     }
 
     private func isMonthlyCreditsPlan(response: JunieAuthInfoResponse, quotaDetails: JunieQuotaDetails?) -> Bool {
@@ -543,14 +578,17 @@ public struct JunieQuotaService: Sendable {
             }
         }
 
-        guard let quota = quotaInfo?.monthlyCreditsQuota(maximumFallback: nextRefill?.tariff?.amount) else {
+        guard let quotaInfo,
+              let quota = quotaInfo.monthlyCreditsQuota(maximumFallback: nextRefill?.tariff?.amount) else {
             return nil
         }
+        let resetsAt = parseISO8601Date(nextRefill?.next)
 
         return JunieQuotaDetails(
             quota: quota,
-            resetsAt: parseISO8601Date(nextRefill?.next),
-            source: .aiAssistantCache
+            resetsAt: resetsAt,
+            source: .aiAssistantCache,
+            additionalQuotas: quotaInfo.additionalCreditsQuotas(resetsAt: resetsAt)
         )
     }
 
@@ -579,11 +617,31 @@ private struct JunieQuotaDetails: Sendable {
     let quota: JunieQuota
     let resetsAt: Date?
     let source: Source
+    let additionalQuotas: [JunieNamedQuota]
+
+    init(
+        quota: JunieQuota,
+        resetsAt: Date?,
+        source: Source,
+        additionalQuotas: [JunieNamedQuota] = []
+    ) {
+        self.quota = quota
+        self.resetsAt = resetsAt
+        self.source = source
+        self.additionalQuotas = additionalQuotas
+    }
 
     enum Source: Sendable {
         case quotaEndpoint
         case aiAssistantCache
     }
+}
+
+private struct JunieNamedQuota: Sendable {
+    let id: String
+    let title: String
+    let quota: JunieQuota
+    let resetsAt: Date?
 }
 
 private struct JunieAuthInfoResponse: Decodable, Sendable {
@@ -617,17 +675,33 @@ private struct JunieAIAssistantQuotaInfo: Decodable, Sendable {
             return nil
         }
 
-        let maximumValue = tariffQuota?.maximum ?? maximum ?? maximumFallback
-        let availableValue = tariffQuota?.available
-            ?? available
-            ?? Self.availableFromSpent(current: tariffQuota?.current, maximum: tariffQuota?.maximum)
-            ?? Self.availableFromSpent(current: current, maximum: maximumValue)
+        let quota = tariffQuota?.creditsQuota(maximumFallback: maximumFallback)
+            ?? JunieQuota(
+                current: available ?? Self.availableFromSpent(current: current, maximum: maximum ?? maximumFallback),
+                maximum: maximum ?? maximumFallback
+            )
 
-        guard availableValue != nil || maximumValue != nil else {
+        guard quota.hasQuotaValue else {
             return nil
         }
 
-        return JunieQuota(current: availableValue, maximum: maximumValue)
+        return quota
+    }
+
+    func additionalCreditsQuotas(resetsAt: Date?) -> [JunieNamedQuota] {
+        guard let topUpQuota = topUpQuota?.creditsQuota(),
+              (topUpQuota.maximum?.value ?? 0) > 0 else {
+            return []
+        }
+
+        return [
+            JunieNamedQuota(
+                id: "junie-top-up-credits",
+                title: "Top-up credits",
+                quota: topUpQuota,
+                resetsAt: resetsAt
+            )
+        ]
     }
 
     private static func availableFromSpent(current: JunieMoneyAmount?, maximum: JunieMoneyAmount?) -> JunieMoneyAmount? {
@@ -643,6 +717,21 @@ private struct JunieAIAssistantQuotaBucket: Decodable, Sendable {
     let current: JunieMoneyAmount?
     let maximum: JunieMoneyAmount?
     let available: JunieMoneyAmount?
+
+    func creditsQuota(maximumFallback: JunieMoneyAmount? = nil) -> JunieQuota? {
+        let maximumValue = maximum ?? maximumFallback
+        let availableValue = available ?? Self.availableFromSpent(current: current, maximum: maximumValue)
+        let quota = JunieQuota(current: availableValue, maximum: maximumValue)
+        return quota.hasQuotaValue ? quota : nil
+    }
+
+    private static func availableFromSpent(current: JunieMoneyAmount?, maximum: JunieMoneyAmount?) -> JunieMoneyAmount? {
+        guard let current, let maximum else {
+            return nil
+        }
+
+        return JunieMoneyAmount(value: max(0, maximum.value - current.value))
+    }
 }
 
 private struct JunieAIAssistantNextRefill: Decodable, Sendable {

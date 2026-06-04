@@ -5,18 +5,25 @@
   "sourceSummary": "Google Cloud Code Assist API",
   "metrics": [
     {
-      "id": "gemini-gemini-2.5-flash",
+      "id": "gemini-2.5-flash",
       "title": "Gemini 2.5 Flash",
       "usedPercent": 25,
       "usedLabel": "50/200 used",
       "remainingLabel": "150 left"
     },
     {
-      "id": "gemini-gemini-2.5-flash-lite",
+      "id": "gemini-2.5-flash-lite",
       "title": "Gemini 2.5 Flash Lite",
       "usedPercent": 0,
       "usedLabel": "0/200 used",
       "remainingLabel": "200 left"
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "title": "Gemini 2.5 Pro",
+      "usedPercent": 100,
+      "usedLabel": "100% used",
+      "remainingLabel": "0% left"
     }
   ]
 }

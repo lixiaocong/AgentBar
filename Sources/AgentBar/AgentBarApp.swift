@@ -62,4 +62,12 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
         logInfo("Opening settings window")
         settingsWindowController?.show()
     }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        showSettings()
+        return true
+    }
 }

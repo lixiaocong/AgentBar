@@ -30,7 +30,7 @@ struct MenuBarView: View {
             ScrollView([.horizontal, .vertical]) {
                 content(visibleProviders: visibleProviders)
                     .fixedSize(horizontal: true, vertical: true)
-                    .padding(12)
+                    .padding(16)
             }
 
             Divider()
@@ -107,67 +107,38 @@ struct MenuBarView: View {
             fallback: style.tint
         )
 
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 10) {
+            providerIconBadge(style, tint: statusTint)
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(style.eyebrow)
                     .font(.system(.caption2, design: .rounded).weight(.black))
-                    .tracking(1)
+                    .tracking(1.2)
                     .foregroundStyle(statusTint)
+                    .lineLimit(1)
 
                 Text(style.title)
-                    .font(.system(.title3, design: .rounded).weight(.heavy))
-                    .foregroundStyle(statusTint)
+                    .font(.system(.headline, design: .rounded).weight(.heavy))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
 
                 Text(accountCount == 1 ? "1 account" : "\(accountCount) accounts")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
+            .layoutPriority(1)
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 2) {
-                if let metric = snapshot?.highlightMetric {
-                    Text(metric.percentText)
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(statusTint)
-
-                    Text("remaining")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else if snapshot != nil {
-                    Text("Ready")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                        .foregroundStyle(statusTint)
-
-                    Text("linked")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else if error != nil {
-                    Text("!")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundStyle(statusTint)
-
-                    Text("error")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("...")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundStyle(statusTint)
-
-                    Text("loading")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
+            providerSummaryValue(snapshot: snapshot, error: error, tint: statusTint)
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(statusTint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(statusTint.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(statusTint.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(statusTint.opacity(0.16), lineWidth: 1)
         }
     }
 
@@ -198,19 +169,17 @@ struct MenuBarView: View {
             fallback: style.tint
         )
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
             accountHeader(status, snapshot: status.snapshot, statusTint: statusTint)
 
             if let snapshot = status.snapshot {
-                ForEach(snapshot.metrics) { metric in
-                    quotaBlock(metric: metric)
-                }
-
                 if snapshot.metrics.isEmpty {
                     Text(snapshot.sourceSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    metricsStack(snapshot.metrics)
                 }
             } else if let error = status.errorMessage {
                 Text(error)
@@ -222,12 +191,13 @@ struct MenuBarView: View {
                     .controlSize(.small)
             }
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(statusTint.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(statusTint.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(statusTint.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(statusTint.opacity(0.13), lineWidth: 1)
         }
     }
 
@@ -237,61 +207,42 @@ struct MenuBarView: View {
         snapshot: AgentQuotaSnapshot?,
         statusTint: Color
     ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                NonHyphenatingLabel(snapshot?.accountLabel ?? status.accountLabel ?? "Configured account")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(statusTint)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
+        let badges = accountBadges(provider: status.provider, snapshot: snapshot)
 
-                if let contextLabel = accountContextLabel(snapshot: snapshot) {
-                    Text(contextLabel)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(statusTint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+        VStack(alignment: .leading, spacing: 4) {
+            if !badges.isEmpty ||
+                compactAccountStateLabel(status: status, snapshot: snapshot) != nil {
+                HStack(spacing: 5) {
+                    if badges.isEmpty,
+                       let stateLabel = compactAccountStateLabel(status: status, snapshot: snapshot) {
+                        accountBadge(stateLabel, tint: statusTint)
+                    } else {
+                        ForEach(badges, id: \.self) { badge in
+                            accountBadge(badge, tint: statusTint)
+                        }
+                    }
                 }
             }
 
-            Spacer()
+            NonHyphenatingLabel(snapshot?.accountLabel ?? status.accountLabel ?? "Configured account")
+                .font(.headline.weight(.heavy))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
-            VStack(alignment: .trailing, spacing: 2) {
-                if let metric = snapshot?.highlightMetric {
-                    Text(metric.percentText)
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(statusTint)
-
-                    Text("remaining")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else if snapshot != nil {
-                    Text("Ready")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(statusTint)
-
-                    Text("linked")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else if status.errorMessage != nil {
-                    Text("!")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(statusTint)
-
-                    Text("error")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("...")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(statusTint)
-
-                    Text("loading")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+    @ViewBuilder
+    private func metricsStack(_ metrics: [AgentQuotaMetric]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(metrics.enumerated()), id: \.element.id) { index, metric in
+                if index > 0 {
+                    Divider()
+                        .opacity(0.28)
                 }
+
+                quotaBlock(metric: metric)
             }
         }
     }
@@ -300,27 +251,40 @@ struct MenuBarView: View {
     private func quotaBlock(metric: AgentQuotaMetric) -> some View {
         let tint = quotaTint(for: metric)
 
-        VStack(alignment: .leading, spacing: 6) {
-            Text(metric.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(tint)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                QuotaMetricTitle(title: metric.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .help(metric.title)
+
+                Text(compactRemainingLabel(metric.remainingLabel))
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(3)
+            }
 
             quotaBar(value: metric.remainingPercent, tint: tint)
 
-            HStack {
-                Text(metric.remainingLabel)
-                    .foregroundStyle(tint)
-                Spacer()
+            HStack(spacing: 8) {
                 Text(metric.usedLabel)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                    .lineLimit(1)
 
-            if let resetsAt = metric.resetsAt {
-                Text("Resets \(resetsAt, style: .relative) at \(resetsAt.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+
+                if let resetsAt = metric.resetsAt {
+                    Text("Resets \(resetsAt, style: .relative) at \(resetsAt.formatted(date: .omitted, time: .shortened))")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -337,16 +301,79 @@ struct MenuBarView: View {
                     .frame(width: max(3, proxy.size.width * progress))
             }
         }
-        .frame(height: 6)
+        .frame(height: 5)
     }
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
         quotaTint(for: metric.remainingPercent)
     }
 
-    private func accountContextLabel(snapshot: AgentQuotaSnapshot?) -> String? {
-        trimmedSpaceLabel(snapshot?.spaceLabel) ??
-            trimmedSpaceLabel(snapshot?.planType)
+    private func compactRemainingLabel(_ label: String) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = trimmed.lowercased()
+        let normalized = trimmed.replacingOccurrences(of: " / ", with: "/")
+
+        if lowercased.hasSuffix(" monthly credits left") {
+            return normalized.replacingOccurrences(
+                of: " monthly credits left",
+                with: " left",
+                options: [.caseInsensitive]
+            )
+        }
+
+        return normalized
+    }
+
+    private func accountBadges(provider: AgentProviderKind, snapshot: AgentQuotaSnapshot?) -> [String] {
+        let values: [String?]
+        if provider == .codex {
+            values = [
+                trimmedSpaceLabel(snapshot?.spaceLabel),
+                userFacingPlanLabel(snapshot?.planType)
+            ]
+        } else {
+            values = [
+                userFacingPlanLabel(snapshot?.planType),
+                trimmedSpaceLabel(snapshot?.spaceLabel)
+            ]
+        }
+
+        return values
+        .compactMap { $0 }
+        .reduce(into: [String]()) { result, badge in
+            if !result.contains(badge) {
+                result.append(badge)
+            }
+        }
+    }
+
+    private func userFacingPlanLabel(_ value: String?) -> String? {
+        guard let trimmed = trimmedSpaceLabel(value) else {
+            return nil
+        }
+
+        switch trimmed.lowercased() {
+        case "prolite":
+            return nil
+        default:
+            return trimmed
+        }
+    }
+
+    private func compactAccountStateLabel(status: AgentAccountStatus, snapshot: AgentQuotaSnapshot?) -> String? {
+        if snapshot?.metrics.isEmpty == false {
+            return nil
+        }
+
+        if snapshot != nil {
+            return "Ready"
+        }
+
+        if status.errorMessage != nil {
+            return "Error"
+        }
+
+        return "Loading"
     }
 
     private func trimmedSpaceLabel(_ value: String?) -> String? {
@@ -378,6 +405,78 @@ struct MenuBarView: View {
         Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
     }
 
+    private func providerIconBadge(_ style: ProviderHeaderStyle, tint: Color) -> some View {
+        Image(style.assetName)
+            .resizable()
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(width: 21, height: 21)
+            .frame(width: 34, height: 34)
+            .background(.background.opacity(0.82), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(tint.opacity(0.18), lineWidth: 1)
+            }
+    }
+
+    @ViewBuilder
+    private func providerSummaryValue(
+        snapshot: AgentQuotaSnapshot?,
+        error: String?,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            if let metric = snapshot?.highlightMetric {
+                Text(metric.percentText)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+
+                Text("remaining")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else if snapshot != nil {
+                Text("Ready")
+                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint)
+
+                Text("linked")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else if error != nil {
+                Text("!")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint)
+
+                Text("error")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("...")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundStyle(tint)
+
+                Text("loading")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func accountBadge(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.subheadline.weight(.heavy))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.14), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tint.opacity(0.20), lineWidth: 1)
+            }
+    }
+
     private var controls: some View {
         HStack(spacing: 8) {
 
@@ -396,22 +495,18 @@ struct MenuBarView: View {
         .controlSize(.regular)
     }
 
-    private func providerHeaderStyle(for provider: AgentProviderKind) -> (
-        eyebrow: String,
-        title: String,
-        tint: Color
-    ) {
+    private func providerHeaderStyle(for provider: AgentProviderKind) -> ProviderHeaderStyle {
         switch provider {
         case .codex:
-            return ("OPENAI", "Codex", .blue)
+            return ProviderHeaderStyle(eyebrow: "OPENAI", title: "Codex", assetName: "ProviderLogoCodex", tint: .orange)
         case .githubCopilot:
-            return ("GITHUB", "Copilot", .green)
+            return ProviderHeaderStyle(eyebrow: "GITHUB", title: "Copilot", assetName: "ProviderLogoCopilot", tint: .green)
         case .gemini:
-            return ("GOOGLE", "Gemini", .orange)
+            return ProviderHeaderStyle(eyebrow: "GOOGLE", title: "Gemini", assetName: "ProviderLogoGemini", tint: .green)
         case .claude:
-            return ("ANTHROPIC", "Claude", .brown)
+            return ProviderHeaderStyle(eyebrow: "ANTHROPIC", title: "Claude", assetName: "ProviderLogoClaude", tint: .purple)
         case .junie:
-            return ("JETBRAINS", "Junie", .pink)
+            return ProviderHeaderStyle(eyebrow: "JETBRAINS", title: "Junie", assetName: "ProviderLogoJunie", tint: .orange)
         }
     }
 
@@ -426,6 +521,58 @@ private extension Color {
     init(agentQuotaRGB rgb: AgentQuotaDisplayRGB) {
         self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
+}
+
+private struct QuotaMetricTitle: View {
+    let title: String
+
+    var body: some View {
+        if let parts = Self.windowTitleParts(from: title) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                if let prefix = parts.prefix {
+                    Text(prefix)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(minWidth: 0)
+                }
+
+                Text(parts.suffix)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+            }
+        } else {
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    private static func windowTitleParts(from title: String) -> (prefix: String?, suffix: String)? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = windowSuffixPattern.firstMatch(in: trimmed, range: range),
+              let suffixRange = Range(match.range, in: trimmed) else {
+            return nil
+        }
+
+        let suffix = String(trimmed[suffixRange])
+        let prefix = String(trimmed[..<suffixRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (prefix.isEmpty ? nil : prefix, suffix)
+    }
+
+    private static let windowSuffixPattern = try! NSRegularExpression(
+        pattern: #"\b\d+\s+(?:minute|hour|day|week|month)s?\s+window$"#,
+        options: [.caseInsensitive]
+    )
+}
+
+private struct ProviderHeaderStyle {
+    let eyebrow: String
+    let title: String
+    let assetName: String
+    let tint: Color
 }
 
 private struct MenuBarContentSizePreferenceKey: PreferenceKey {

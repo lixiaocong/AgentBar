@@ -163,15 +163,90 @@ func usesJetBrainsAIAssistantQuotaCacheForAIPMonthlyCredits() throws {
 
     #expect(snapshot.accountLabel == "Junie API Key")
     #expect(snapshot.planType == "Pro")
-    #expect(snapshot.sourceSummary == "Active · 6.47 / 10.00 monthly credits left")
+    #expect(snapshot.sourceSummary == "Active · 6.40 / 10.00 monthly credits left")
     let metric = try #require(snapshot.metrics.first)
     #expect(metric.title == "Monthly credits")
-    #expect(abs(metric.usedPercent - 35.254582) < 0.001)
-    #expect(metric.usedLabel == "3.53 used")
-    #expect(metric.remainingLabel == "6.47 / 10.00 monthly credits left")
+    #expect(abs(metric.usedPercent - 35.9922) < 0.001)
+    #expect(metric.usedLabel == "3.60 used")
+    #expect(metric.remainingLabel == "6.40 / 10.00 monthly credits left")
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     #expect(metric.resetsAt == formatter.date(from: "2026-06-16T05:53:53.825Z"))
+}
+
+@Test
+func displaysJetBrainsTopUpQuotaAsAdditionalMetric() throws {
+    let payload = """
+    {
+      "active": true,
+      "balanceLeft": 640078,
+      "balanceUnit": "CREDITS",
+      "licenseType": "AIP",
+      "authType": ""
+    }
+    """
+    let cacheXML = """
+    <application>
+      <component name="AIAssistantQuotaManager2">
+        <option name="nextRefill" value="{&quot;type&quot;:&quot;Known&quot;,&quot;next&quot;:&quot;2026-06-16T05:53:53.825Z&quot;,&quot;tariff&quot;:{&quot;amount&quot;:&quot;1000000&quot;,&quot;duration&quot;:&quot;PT720H&quot;}}" />
+        <option name="quotaInfo" value="{&quot;type&quot;:&quot;Available&quot;,&quot;tariffQuota&quot;:{&quot;current&quot;:&quot;352545.82&quot;,&quot;maximum&quot;:&quot;1000000&quot;,&quot;available&quot;:&quot;647454.18&quot;},&quot;topUpQuota&quot;:{&quot;current&quot;:&quot;50000&quot;,&quot;maximum&quot;:&quot;200000&quot;,&quot;available&quot;:&quot;150000&quot;}}" />
+      </component>
+    </application>
+    """
+    let cacheURL = FileManager.default.temporaryDirectory
+        .appending(path: "AgentBar-JunieQuota-\(UUID().uuidString).xml")
+    try cacheXML.write(to: cacheURL, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+    let snapshot = try JunieQuotaService(quotaCacheFiles: [cacheURL]).decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabelFallback: "Junie API Key",
+        updatedAt: Date()
+    )
+
+    #expect(snapshot.metrics.count == 2)
+    let metric = snapshot.metrics[1]
+    #expect(metric.id == "junie-top-up-credits")
+    #expect(metric.title == "Top-up credits")
+    #expect(metric.usedPercent == 25)
+    #expect(metric.usedLabel == "0.50 used")
+    #expect(metric.remainingLabel == "1.50 / 2.00 credits left")
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    #expect(metric.resetsAt == formatter.date(from: "2026-06-16T05:53:53.825Z"))
+}
+
+@Test
+func fallsBackToJetBrainsAIAssistantQuotaCacheWhenAuthPayloadLacksBalance() throws {
+    let payload = """
+    {
+      "active": true,
+      "licenseType": "AIP",
+      "authType": ""
+    }
+    """
+    let cacheXML = """
+    <application>
+      <component name="AIAssistantQuotaManager2">
+        <option name="quotaInfo" value="{&quot;type&quot;:&quot;Available&quot;,&quot;tariffQuota&quot;:{&quot;current&quot;:&quot;352545.82&quot;,&quot;maximum&quot;:&quot;1000000&quot;,&quot;available&quot;:&quot;647454.18&quot;}}" />
+      </component>
+    </application>
+    """
+    let cacheURL = FileManager.default.temporaryDirectory
+        .appending(path: "AgentBar-JunieQuota-\(UUID().uuidString).xml")
+    try cacheXML.write(to: cacheURL, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+    let snapshot = try JunieQuotaService(quotaCacheFiles: [cacheURL]).decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabelFallback: "Junie API Key",
+        updatedAt: Date()
+    )
+
+    #expect(snapshot.sourceSummary == "Active · 6.47 / 10.00 monthly credits left")
+    let metric = try #require(snapshot.metrics.first)
+    #expect(abs(metric.usedPercent - 35.254582) < 0.001)
+    #expect(metric.remainingLabel == "6.47 / 10.00 monthly credits left")
 }
 
 @Test

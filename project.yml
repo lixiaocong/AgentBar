@@ -19,6 +19,8 @@ targets:
         buildPhase: resources
       - path: Resources/AppIcon.xcassets
         buildPhase: resources
+      - path: Resources/ProviderLogos.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentbar.menu
@@ -43,6 +45,8 @@ targets:
       - path: Resources/AppIcon.icns
         buildPhase: resources
       - path: Resources/AppIcon.xcassets
+        buildPhase: resources
+      - path: Resources/ProviderLogos.xcassets
         buildPhase: resources
     settings:
       base:

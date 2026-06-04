@@ -42,21 +42,18 @@ enum MenuBarStatusImage {
     }
 
     static func make(bars: [Bar]) -> NSImage {
-        let size = imageSize
+        let values = Array((bars.isEmpty ? [Bar(provider: nil, remainingPercent: nil)] : bars).prefix(3))
+        let labelWidth = labelWidth(for: values)
+        let size = imageSize(labelWidth: labelWidth)
         let image = NSImage(size: size)
         image.lockFocus()
 
         NSColor.clear.setFill()
         NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
 
-        let values = Array((bars.isEmpty ? [Bar(provider: nil, remainingPercent: nil)] : bars).prefix(3))
-        let horizontalPadding: CGFloat = 2
-        let labelWidth = labelWidth
-        let labelGap: CGFloat = 3
         let spacing: CGFloat = values.count == 1 ? 0 : 2
         let availableHeight = size.height - 2 - spacing * CGFloat(max(values.count - 1, 0))
         let barHeight = min(maxBarHeight(for: values.count), floor(availableHeight / CGFloat(values.count)))
-        let barWidth = size.width - horizontalPadding * 2 - labelWidth - labelGap
         let totalHeight = barHeight * CGFloat(values.count) + spacing * CGFloat(max(values.count - 1, 0))
         let startY = (size.height - totalHeight) / 2
 
@@ -78,12 +75,26 @@ enum MenuBarStatusImage {
         return image
     }
 
-    private static var imageSize: NSSize {
-        NSSize(width: 66, height: 18)
+    private static let horizontalPadding: CGFloat = 1
+    private static let labelGap: CGFloat = 2
+    private static let barWidth: CGFloat = 38
+    private static let imageHeight: CGFloat = 18
+    private static let minimumLabelWidth: CGFloat = 8
+
+    private static func imageSize(labelWidth: CGFloat) -> NSSize {
+        NSSize(width: horizontalPadding * 2 + labelWidth + labelGap + barWidth, height: imageHeight)
     }
 
-    private static var labelWidth: CGFloat {
-        21
+    private static func labelWidth(for bars: [Bar]) -> CGFloat {
+        let rowCount = max(bars.count, 1)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: labelFont(rowCount: rowCount)
+        ]
+        let measuredWidth = bars
+            .map { ceil(($0.label as NSString).size(withAttributes: attributes).width) }
+            .max() ?? minimumLabelWidth
+
+        return max(minimumLabelWidth, measuredWidth)
     }
 
     private static func maxBarHeight(for rowCount: Int) -> CGFloat {
@@ -149,15 +160,19 @@ enum MenuBarStatusImage {
         paragraphStyle.alignment = .right
 
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(
-                ofSize: labelFontSize(rowCount: rowCount),
-                weight: .bold
-            ),
+            .font: labelFont(rowCount: rowCount),
             .foregroundColor: fillColor(for: bar),
             .paragraphStyle: paragraphStyle
         ]
 
         bar.label.draw(in: rect, withAttributes: attributes)
+    }
+
+    private static func labelFont(rowCount: Int) -> NSFont {
+        NSFont.monospacedSystemFont(
+            ofSize: labelFontSize(rowCount: rowCount),
+            weight: .bold
+        )
     }
 
     private static func labelFontSize(rowCount: Int) -> CGFloat {
