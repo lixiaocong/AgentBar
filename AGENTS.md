@@ -7,6 +7,17 @@ Codex, GitHub Copilot, and Gemini are displayed **simultaneously** after AgentBa
 
 ---
 
+## UI parity
+
+Any user-facing UI change must be evaluated for both platforms:
+
+- macOS SwiftUI: `Sources/AgentBar/Views/`
+- Windows WPF: `Windows/src/AgentBar.Windows/`
+
+If a UI change intentionally applies to only one platform, document the reason in the change summary. Otherwise, keep the macOS and Windows popover/settings structures aligned.
+
+---
+
 ## Project layout
 
 ```

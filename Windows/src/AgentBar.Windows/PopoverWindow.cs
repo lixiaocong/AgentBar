@@ -11,9 +11,9 @@ namespace AgentBar.Windows;
 
 public sealed class PopoverWindow : Window
 {
-    private const double ProviderColumnWidth = 340;
-    private const double ProviderColumnSpacing = 28;
-    private const double MetricBarWidth = 300;
+    private const double ProviderColumnWidth = 264;
+    private const double ProviderColumnSpacing = 14;
+    private const double MetricBarWidth = 244;
     private const double WindowChromeWidth = 56;
 
     private readonly RefreshCoordinator _coordinator;
@@ -308,13 +308,20 @@ public sealed class PopoverWindow : Window
         var style = ProviderHeaderStyle(provider);
         var tint = PanelTint(snapshot?.HighlightMetric, error, style.Tint);
         var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(ProviderIconBadge(style, tint));
 
-        var titleStack = new StackPanel { Orientation = System.Windows.Controls.Orientation.Vertical };
+        var titleStack = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Vertical,
+            Margin = new Thickness(10, 0, 8, 0)
+        };
         titleStack.Children.Add(Text(style.Eyebrow, 10, FontWeights.Black, Brush(tint), TextWrapping.NoWrap));
-        titleStack.Children.Add(Text(style.Title, 21, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap));
+        titleStack.Children.Add(Text(style.Title, 17, FontWeights.ExtraBold, PrimaryBrush(), TextWrapping.NoWrap));
         titleStack.Children.Add(Text(accountCount == 1 ? "1 account" : $"{accountCount} accounts", 11, FontWeights.Medium, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap));
+        Grid.SetColumn(titleStack, 1);
         grid.Children.Add(titleStack);
 
         var statusStack = new StackPanel
@@ -323,18 +330,18 @@ public sealed class PopoverWindow : Window
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right
         };
         var (value, label) = SnapshotStatus(snapshot, error, large: true);
-        statusStack.Children.Add(Text(value, 22, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap));
+        statusStack.Children.Add(Text(value, 28, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap));
         statusStack.Children.Add(Text(label, 11, FontWeights.SemiBold, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap));
-        Grid.SetColumn(statusStack, 1);
+        Grid.SetColumn(statusStack, 2);
         grid.Children.Add(statusStack);
 
         return new Border
         {
-            CornerRadius = new CornerRadius(12),
+            CornerRadius = new CornerRadius(10),
             BorderThickness = new Thickness(1),
-            BorderBrush = Brush(tint, 0.18),
-            Background = Brush(tint, 0.08),
-            Padding = new Thickness(10),
+            BorderBrush = Brush(tint, 0.16),
+            Background = Brush(tint, 0.07),
+            Padding = new Thickness(10, 9, 10, 9),
             Margin = new Thickness(0, 0, 0, 10),
             Child = grid
         };
@@ -355,9 +362,19 @@ public sealed class PopoverWindow : Window
             }
             else
             {
-                foreach (var metric in snapshot.Metrics)
+                for (var index = 0; index < snapshot.Metrics.Count; index++)
                 {
-                    panel.Children.Add(MetricBlock(metric));
+                    if (index > 0)
+                    {
+                        panel.Children.Add(new Border
+                        {
+                            Height = 1,
+                            Background = Brush(System.Windows.Media.Color.FromRgb(118, 122, 138), 0.20),
+                            Margin = new Thickness(0, 0, 0, 8)
+                        });
+                    }
+
+                    panel.Children.Add(MetricBlock(snapshot.Metrics[index]));
                 }
             }
         }
@@ -372,11 +389,11 @@ public sealed class PopoverWindow : Window
 
         return new Border
         {
-            CornerRadius = new CornerRadius(12),
+            CornerRadius = new CornerRadius(9),
             BorderThickness = new Thickness(1),
-            BorderBrush = Brush(tint, 0.16),
-            Background = Brush(tint, 0.06),
-            Padding = new Thickness(10),
+            BorderBrush = Brush(tint, 0.13),
+            Background = Brush(tint, 0.045),
+            Padding = new Thickness(10, 9, 10, 9),
             Margin = new Thickness(0, 0, 0, 10),
             Child = panel
         };
@@ -384,32 +401,39 @@ public sealed class PopoverWindow : Window
 
     private static UIElement AccountHeader(AgentAccountStatus status, System.Windows.Media.Color tint)
     {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 8) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var labelStack = new StackPanel { Orientation = System.Windows.Controls.Orientation.Vertical };
-        var accountLabel = status.Snapshot?.AccountLabel ?? status.AccountLabel ?? "Configured account";
-        labelStack.Children.Add(Text(accountLabel, 13, FontWeights.SemiBold, Brush(tint), TextWrapping.NoWrap, trim: true));
-        if (AccountContextLabel(status.Snapshot) is { } context)
-        {
-            labelStack.Children.Add(Text(context, 11, FontWeights.Medium, Brush(tint), TextWrapping.NoWrap, trim: true));
-        }
-
-        grid.Children.Add(labelStack);
-
-        var (value, label) = SnapshotStatus(status.Snapshot, status.ErrorMessage, large: false);
-        var statusStack = new StackPanel
+        var labelStack = new StackPanel
         {
             Orientation = System.Windows.Controls.Orientation.Vertical,
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
-            Margin = new Thickness(8, 0, 0, 0)
+            Margin = new Thickness(0, 0, 0, 8)
         };
-        statusStack.Children.Add(Text(value, 17, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap));
-        statusStack.Children.Add(Text(label, 10, FontWeights.SemiBold, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap));
-        Grid.SetColumn(statusStack, 1);
-        grid.Children.Add(statusStack);
-        return grid;
+        var badges = AccountBadges(status.Provider, status.Snapshot);
+        var stateLabel = CompactAccountStateLabel(status);
+        if (badges.Count > 0 || stateLabel is not null)
+        {
+            var badgePanel = new StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+
+            if (badges.Count == 0 && stateLabel is not null)
+            {
+                badgePanel.Children.Add(AccountBadge(stateLabel, tint));
+            }
+            else
+            {
+                foreach (var badge in badges)
+                {
+                    badgePanel.Children.Add(AccountBadge(badge, tint));
+                }
+            }
+
+            labelStack.Children.Add(badgePanel);
+        }
+
+        var accountLabel = status.Snapshot?.AccountLabel ?? status.AccountLabel ?? "Configured account";
+        labelStack.Children.Add(Text(accountLabel, 14, FontWeights.ExtraBold, PrimaryBrush(), TextWrapping.NoWrap, trim: true));
+        return labelStack;
     }
 
     private static UIElement MetricBlock(AgentQuotaMetric metric)
@@ -420,23 +444,29 @@ public sealed class PopoverWindow : Window
             Orientation = System.Windows.Controls.Orientation.Vertical,
             Margin = new Thickness(0, 2, 0, 10)
         };
-        panel.Children.Add(Text(metric.Title, 13, FontWeights.SemiBold, Brush(tint), TextWrapping.Wrap));
+        var titleRow = new Grid();
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition());
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleRow.Children.Add(Text(metric.Title, 12, FontWeights.Bold, PrimaryBrush(), TextWrapping.NoWrap, trim: true));
+        var remaining = Text(CompactRemainingLabel(metric.RemainingLabel), 12, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap, trim: true);
+        remaining.Margin = new Thickness(8, 0, 0, 0);
+        Grid.SetColumn(remaining, 1);
+        titleRow.Children.Add(remaining);
+        panel.Children.Add(titleRow);
         panel.Children.Add(QuotaBar(metric.RemainingPercent, tint));
 
-        var labels = new Grid { Margin = new Thickness(0, 4, 0, 0) };
-        labels.ColumnDefinitions.Add(new ColumnDefinition());
-        labels.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        labels.Children.Add(Text(metric.RemainingLabel, 11, FontWeights.Medium, Brush(tint), TextWrapping.NoWrap, trim: true));
-        var used = Text(metric.UsedLabel, 11, FontWeights.Normal, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap);
-        used.Margin = new Thickness(8, 0, 0, 0);
-        Grid.SetColumn(used, 1);
-        labels.Children.Add(used);
-        panel.Children.Add(labels);
-
+        var footer = new Grid { Margin = new Thickness(0, 4, 0, 0) };
+        footer.ColumnDefinitions.Add(new ColumnDefinition());
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footer.Children.Add(Text(metric.UsedLabel, 11, FontWeights.Medium, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap, trim: true));
         if (metric.ResetsAt is { } resetsAt)
         {
-            panel.Children.Add(Text($"Resets {RelativeTime(resetsAt)} at {resetsAt.LocalDateTime.ToString("t", CultureInfo.CurrentCulture)}", 11, FontWeights.Normal, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138))));
+            var reset = Text($"Resets {RelativeTime(resetsAt)} at {resetsAt.LocalDateTime.ToString("t", CultureInfo.CurrentCulture)}", 11, FontWeights.Medium, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap, trim: true);
+            reset.Margin = new Thickness(8, 0, 0, 0);
+            Grid.SetColumn(reset, 1);
+            footer.Children.Add(reset);
         }
+        panel.Children.Add(footer);
 
         return panel;
     }
@@ -448,19 +478,19 @@ public sealed class PopoverWindow : Window
         var grid = new Grid
         {
             Width = MetricBarWidth,
-            Height = 6,
+            Height = 5,
             Margin = new Thickness(0, 6, 0, 0),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Left
         };
         grid.Children.Add(new Border
         {
-            CornerRadius = new CornerRadius(3),
+            CornerRadius = new CornerRadius(2.5),
             Background = Brush(System.Windows.Media.Color.FromRgb(104, 108, 122), 0.20)
         });
         grid.Children.Add(new Border
         {
             Width = width,
-            CornerRadius = new CornerRadius(3),
+            CornerRadius = new CornerRadius(2.5),
             Background = Brush(tint),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Left
         });
@@ -553,6 +583,45 @@ public sealed class PopoverWindow : Window
         return new ControlTemplate(typeof(System.Windows.Controls.Button)) { VisualTree = border };
     }
 
+    private static UIElement ProviderIconBadge(
+        (string Eyebrow, string Title, string IconLabel, System.Windows.Media.Color Tint) style,
+        System.Windows.Media.Color tint)
+    {
+        return new Border
+        {
+            Width = 34,
+            Height = 34,
+            CornerRadius = new CornerRadius(8),
+            Background = Brush(System.Windows.Media.Color.FromArgb(210, 255, 255, 255)),
+            BorderBrush = Brush(tint, 0.18),
+            BorderThickness = new Thickness(1),
+            Child = new TextBlock
+            {
+                Text = style.IconLabel,
+                FontSize = 11,
+                FontWeight = FontWeights.Black,
+                Foreground = Brush(tint),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Center
+            }
+        };
+    }
+
+    private static UIElement AccountBadge(string value, System.Windows.Media.Color tint)
+    {
+        return new Border
+        {
+            CornerRadius = new CornerRadius(999),
+            Background = Brush(tint, 0.14),
+            BorderBrush = Brush(tint, 0.20),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(9, 3, 9, 3),
+            Margin = new Thickness(0, 0, 5, 0),
+            Child = Text(value, 12, FontWeights.ExtraBold, Brush(tint), TextWrapping.NoWrap, trim: true)
+        };
+    }
+
     private static AgentQuotaSnapshot? SummarySnapshot(IReadOnlyList<AgentAccountStatus> statuses)
     {
         return statuses
@@ -582,8 +651,59 @@ public sealed class PopoverWindow : Window
         return (large ? "..." : "--", "loading");
     }
 
-    private static string? AccountContextLabel(AgentQuotaSnapshot? snapshot) =>
-        Clean(snapshot?.SpaceLabel) ?? Clean(snapshot?.PlanType);
+    private static IReadOnlyList<string> AccountBadges(AgentProviderKind provider, AgentQuotaSnapshot? snapshot)
+    {
+        var values = provider == AgentProviderKind.Codex
+            ? new[] { Clean(snapshot?.SpaceLabel), UserFacingPlanLabel(snapshot?.PlanType) }
+            : new[] { UserFacingPlanLabel(snapshot?.PlanType), Clean(snapshot?.SpaceLabel) };
+        var badges = new List<string>();
+        foreach (var value in values)
+        {
+            if (value is not null && !badges.Contains(value, StringComparer.OrdinalIgnoreCase))
+            {
+                badges.Add(value);
+            }
+        }
+
+        return badges;
+    }
+
+    private static string? UserFacingPlanLabel(string? value)
+    {
+        var cleaned = Clean(value);
+        if (cleaned is null)
+        {
+            return null;
+        }
+
+        return string.Equals(cleaned, "prolite", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : cleaned;
+    }
+
+    private static string? CompactAccountStateLabel(AgentAccountStatus status)
+    {
+        if (status.Snapshot?.Metrics.Count > 0)
+        {
+            return null;
+        }
+
+        if (status.Snapshot is not null)
+        {
+            return "Ready";
+        }
+
+        return status.ErrorMessage is not null ? "Error" : "Loading";
+    }
+
+    private static string CompactRemainingLabel(string label)
+    {
+        var trimmed = label.Trim();
+        var normalized = trimmed.Replace(" / ", "/", StringComparison.Ordinal);
+        return normalized.EndsWith(" monthly credits left", StringComparison.OrdinalIgnoreCase)
+            ? normalized[..^" monthly credits left".Length] + " left"
+            : normalized;
+    }
 
     private static string? Clean(string? value)
     {
@@ -610,14 +730,14 @@ public sealed class PopoverWindow : Window
             ToByte(rgb.Blue));
     }
 
-    private static (string Eyebrow, string Title, System.Windows.Media.Color Tint) ProviderHeaderStyle(AgentProviderKind provider) => provider switch
+    private static (string Eyebrow, string Title, string IconLabel, System.Windows.Media.Color Tint) ProviderHeaderStyle(AgentProviderKind provider) => provider switch
     {
-        AgentProviderKind.Codex => ("OPENAI", "Codex", System.Windows.Media.Color.FromRgb(58, 113, 238)),
-        AgentProviderKind.GitHubCopilot => ("GITHUB", "Copilot", System.Windows.Media.Color.FromRgb(41, 148, 89)),
-        AgentProviderKind.Gemini => ("GOOGLE", "Gemini", System.Windows.Media.Color.FromRgb(210, 112, 36)),
-        AgentProviderKind.Claude => ("ANTHROPIC", "Claude", System.Windows.Media.Color.FromRgb(151, 105, 74)),
-        AgentProviderKind.Junie => ("JETBRAINS", "Junie", System.Windows.Media.Color.FromRgb(216, 72, 145)),
-        _ => ("AGENT", provider.Title(), System.Windows.Media.Color.FromRgb(58, 113, 238))
+        AgentProviderKind.Codex => ("OPENAI", "Codex", "AI", System.Windows.Media.Color.FromRgb(226, 159, 0)),
+        AgentProviderKind.GitHubCopilot => ("GITHUB", "Copilot", "GH", System.Windows.Media.Color.FromRgb(41, 148, 89)),
+        AgentProviderKind.Gemini => ("GOOGLE", "Gemini", "G", System.Windows.Media.Color.FromRgb(41, 148, 89)),
+        AgentProviderKind.Claude => ("ANTHROPIC", "Claude", "C", System.Windows.Media.Color.FromRgb(142, 91, 184)),
+        AgentProviderKind.Junie => ("JETBRAINS", "Junie", "JB", System.Windows.Media.Color.FromRgb(226, 159, 0)),
+        _ => ("AGENT", provider.Title(), "AG", System.Windows.Media.Color.FromRgb(58, 113, 238))
     };
 
     private static string RelativeTime(DateTimeOffset date)
@@ -647,6 +767,9 @@ public sealed class PopoverWindow : Window
         brush.Freeze();
         return brush;
     }
+
+    private static SolidColorBrush PrimaryBrush() =>
+        Brush(System.Windows.Media.Color.FromRgb(47, 50, 66));
 
     private static byte ToByte(double value) =>
         (byte)Math.Clamp((int)Math.Round(value * 255), 0, 255);
