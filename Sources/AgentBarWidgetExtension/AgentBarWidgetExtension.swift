@@ -271,21 +271,23 @@ struct AgentBarDesktopWidgetView: View {
             providerIconBadge(style)
 
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(state.provider.title)
                         .font(.system(.headline, design: .rounded).weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
                     if let plan = userFacingPlanLabel(state.snapshot?.planType) {
                         detailPill(label: "", value: plan)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
 
                 if let accountLabel = AgentBarWidgetAccountValue.accountSubtitle(for: state) {
                     Text(accountLabel)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(palette.secondaryText)
+                        .font(.callout.weight(.bold))
+                        .foregroundStyle(palette.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
@@ -377,9 +379,9 @@ struct AgentBarDesktopWidgetView: View {
                     .foregroundStyle(palette.secondaryText)
             }
             Text(value)
-                .font(.system(.caption2, design: .monospaced))
+                .font(.system(.caption, design: .rounded).weight(.bold))
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(palette.pillBackground, in: Capsule())
     }

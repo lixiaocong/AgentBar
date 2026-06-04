@@ -207,26 +207,29 @@ struct MenuBarView: View {
         snapshot: AgentQuotaSnapshot?,
         statusTint: Color
     ) -> some View {
-        HStack(alignment: .center, spacing: 6) {
+        let badges = accountBadges(provider: status.provider, snapshot: snapshot)
+
+        VStack(alignment: .leading, spacing: 4) {
+            if !badges.isEmpty ||
+                compactAccountStateLabel(status: status, snapshot: snapshot) != nil {
+                HStack(spacing: 5) {
+                    if badges.isEmpty,
+                       let stateLabel = compactAccountStateLabel(status: status, snapshot: snapshot) {
+                        accountBadge(stateLabel, tint: statusTint)
+                    } else {
+                        ForEach(badges, id: \.self) { badge in
+                            accountBadge(badge, tint: statusTint)
+                        }
+                    }
+                }
+            }
+
             NonHyphenatingLabel(snapshot?.accountLabel ?? status.accountLabel ?? "Configured account")
-                .font(.subheadline.weight(.semibold))
+                .font(.headline.weight(.heavy))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .layoutPriority(1)
-
-            ForEach(accountBadges(provider: status.provider, snapshot: snapshot), id: \.self) { badge in
-                accountBadge(badge, tint: statusTint)
-            }
-
-            Spacer(minLength: 0)
-
-            if let stateLabel = compactAccountStateLabel(status: status, snapshot: snapshot) {
-                Text(stateLabel)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(statusTint)
-                    .lineLimit(1)
-            }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -462,12 +465,16 @@ struct MenuBarView: View {
 
     private func accountBadge(_ text: String, tint: Color) -> some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .font(.subheadline.weight(.heavy))
+            .foregroundStyle(tint)
             .lineLimit(1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.08), in: Capsule())
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(tint.opacity(0.14), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tint.opacity(0.20), lineWidth: 1)
+            }
     }
 
     private var controls: some View {
