@@ -9,6 +9,7 @@ using System.Xml.Linq;
 namespace AgentBar.Core;
 
 public sealed class AgentQuotaServiceFactory(IAuthSessionStore authStore, HttpClient? httpClient = null)
+    : IAgentQuotaServiceFactory
 {
     private readonly HttpClient _httpClient = httpClient ?? new HttpClient();
 
@@ -846,7 +847,9 @@ public sealed class GeminiQuotaService(
 
         if (string.IsNullOrWhiteSpace(session.RefreshToken))
         {
-            throw new ProviderQuotaException("Gemini access token expired and no refresh token is available. Sign in from AgentBar settings.");
+            throw new ProviderQuotaException(
+                "Gemini access token expired and no refresh token is available. Sign in from AgentBar settings.",
+                invalidatesStoredLogin: true);
         }
 
         var client = LoadOAuthClientConfiguration();
@@ -864,7 +867,11 @@ public sealed class GeminiQuotaService(
         var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            throw new ProviderQuotaException($"Gemini token refresh failed with HTTP {(int)response.StatusCode}: {Encoding.UTF8.GetString(bytes)}", (int)response.StatusCode);
+            var body = Encoding.UTF8.GetString(bytes);
+            throw new ProviderQuotaException(
+                $"Gemini token refresh failed with HTTP {(int)response.StatusCode}: {body}",
+                (int)response.StatusCode,
+                IsInvalidGeminiLoginResponse(body));
         }
 
         using var document = JsonDocument.Parse(bytes);
@@ -900,6 +907,14 @@ public sealed class GeminiQuotaService(
         }
 
         return bytes;
+    }
+
+    private static bool IsInvalidGeminiLoginResponse(string body)
+    {
+        var normalized = body.ToLowerInvariant();
+        return normalized.Contains("invalid_grant", StringComparison.Ordinal)
+            || normalized.Contains("invalid_token", StringComparison.Ordinal)
+            || normalized.Contains("refresh token", StringComparison.Ordinal);
     }
 
     private static IEnumerable<string> OAuthClientSourceFiles()
@@ -1484,7 +1499,7 @@ public sealed class ProviderQuotaException(
 {
     public int? StatusCode { get; } = statusCode;
     public bool InvalidatesStoredLogin { get; } = invalidatesStoredLogin;
-    public bool IsAuthenticationFailure => invalidatesStoredLogin || StatusCode is 401 or 403;
+    public bool IsAuthenticationFailure => InvalidatesStoredLogin || StatusCode is 401 or 403;
 }
 
 internal static class JsonElementExtensions

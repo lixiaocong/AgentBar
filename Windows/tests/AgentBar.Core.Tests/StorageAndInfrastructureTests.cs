@@ -78,6 +78,132 @@ public sealed class StorageAndInfrastructureTests : IDisposable
     }
 
     [Fact]
+    public void SettingsDefaultsMatchMacRefreshPolicy()
+    {
+        var defaults = AgentBarSettings.Default.Normalized();
+
+        Assert.Equal(10, defaults.RefreshIntervalSeconds);
+        Assert.Equal(5, AgentBarSettings.MinimumRefreshIntervalSeconds);
+        Assert.Equal(300, AgentBarSettings.MaximumRefreshIntervalSeconds);
+        Assert.Equal(5, AgentBarSettings.RefreshIntervalStepSeconds);
+    }
+
+    [Fact]
+    public void ProviderShortLabelsMatchMacStatusIconLabels()
+    {
+        Assert.Equal("cx", AgentProviderKind.Codex.MenuBarShortPrefix());
+        Assert.Equal("cp", AgentProviderKind.GitHubCopilot.MenuBarShortPrefix());
+        Assert.Equal("gm", AgentProviderKind.Gemini.MenuBarShortPrefix());
+        Assert.Equal("cl", AgentProviderKind.Claude.MenuBarShortPrefix());
+        Assert.Equal("jn", AgentProviderKind.Junie.MenuBarShortPrefix());
+    }
+
+    [Fact]
+    public async Task CoordinatorAutoDetectsDefaultClaudeCredentials()
+    {
+        var claudeRoot = Path.Combine(_root, "claude-default");
+        Directory.CreateDirectory(claudeRoot);
+        await File.WriteAllTextAsync(Path.Combine(claudeRoot, "auth.json"), "{}");
+        var paths = new AgentBarPathSet(_root, claudeRoot);
+        var coordinator = new RefreshCoordinator(
+            new JsonSettingsStore(paths),
+            new InMemoryAuthSessionStore(),
+            new FakeAgentQuotaServiceFactory(account => new FakeAgentQuotaService(account)),
+            paths);
+
+        await coordinator.InitializeAsync();
+
+        var status = Assert.Single(coordinator.AccountStatuses);
+        Assert.Equal(AgentProviderKind.Claude, status.Provider);
+        Assert.Equal(claudeRoot, status.Account.Directory.Path);
+        Assert.True(status.CredentialsDetected);
+    }
+
+    [Fact]
+    public async Task CoordinatorRejectsClaudeDirectoryWithoutCredentials()
+    {
+        var coordinator = new RefreshCoordinator(
+            new JsonSettingsStore(_paths),
+            new InMemoryAuthSessionStore(),
+            new FakeAgentQuotaServiceFactory(account => new FakeAgentQuotaService(account)),
+            _paths);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await coordinator.AddClaudeDirectoryAsync(Path.Combine(_root, "empty-claude")));
+    }
+
+    [Fact]
+    public async Task RefreshPreservesStoredAccountLabelOnAccountError()
+    {
+        var authStore = new InMemoryAuthSessionStore();
+        var account = new ConfiguredAgentAccount(
+            AgentProviderKind.Codex,
+            new ConfiguredAccountDirectory(_paths.AccountDirectory(AgentProviderKind.Codex, "codex-account")));
+        await authStore.SaveAsync(new StoredAuthSession(
+            AgentProviderKind.Codex,
+            "codex-account",
+            "dev@example.com",
+            "access",
+            "refresh",
+            "id",
+            null,
+            [],
+            DateTimeOffset.UtcNow));
+        await new JsonSettingsStore(_paths).SaveAsync(new AgentBarSettings([account], [account.Id], 10, true));
+        var coordinator = new RefreshCoordinator(
+            new JsonSettingsStore(_paths),
+            authStore,
+            new FakeAgentQuotaServiceFactory(candidate => new FakeAgentQuotaService(
+                candidate,
+                exception: new ProviderQuotaException("offline"))),
+            _paths);
+
+        await coordinator.InitializeAsync();
+        await coordinator.RefreshNowAsync();
+
+        var status = Assert.Single(coordinator.AccountStatuses);
+        Assert.Equal("dev@example.com", status.DisplayLabel);
+        Assert.Equal("offline", status.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task RefreshRemovesInvalidGeminiLoginLikeMac()
+    {
+        var authStore = new InMemoryAuthSessionStore();
+        var account = new ConfiguredAgentAccount(
+            AgentProviderKind.Gemini,
+            new ConfiguredAccountDirectory(_paths.AccountDirectory(AgentProviderKind.Gemini, "gemini-account")));
+        await authStore.SaveAsync(new StoredAuthSession(
+            AgentProviderKind.Gemini,
+            "gemini-account",
+            "gemini@example.com",
+            "access",
+            "refresh",
+            null,
+            null,
+            [],
+            DateTimeOffset.UtcNow));
+        await new JsonSettingsStore(_paths).SaveAsync(new AgentBarSettings([account], [account.Id], 10, true));
+        var coordinator = new RefreshCoordinator(
+            new JsonSettingsStore(_paths),
+            authStore,
+            new FakeAgentQuotaServiceFactory(candidate => new FakeAgentQuotaService(
+                candidate,
+                exception: new ProviderQuotaException(
+                    "invalid_grant",
+                    statusCode: 400,
+                    invalidatesStoredLogin: true))),
+            _paths);
+
+        await coordinator.InitializeAsync();
+        await coordinator.RefreshNowAsync();
+
+        Assert.Empty(coordinator.Settings.Accounts);
+        Assert.Empty(coordinator.AccountStatuses);
+        Assert.Null(await authStore.LoadAsync(AgentProviderKind.Gemini, "gemini-account"));
+    }
+
+    [Fact]
     public void CallbackParserExtractsCodeStateAndError()
     {
         var callback = TcpLocalCallbackServer.ParseCallback(

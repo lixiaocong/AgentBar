@@ -41,6 +41,11 @@ public interface IAgentQuotaService
     Task<AgentQuotaSnapshot> LoadSnapshotAsync(CancellationToken cancellationToken = default);
 }
 
+public interface IAgentQuotaServiceFactory
+{
+    IAgentQuotaService Create(ConfiguredAgentAccount account);
+}
+
 public sealed record OAuthCallback(string? Code, string? State, string? Error, int Port);
 
 public sealed record IconRenderResult(System.Drawing.Icon Icon, int Width, int Height, bool HasNonTransparentPixels);
@@ -52,11 +57,13 @@ public sealed record AgentBarSettings(
     bool StartHidden)
 {
     public const int MaximumTrayAccounts = 1;
-    public const int MinimumRefreshIntervalSeconds = 15;
-    public const int MaximumRefreshIntervalSeconds = 3600;
+    public const int DefaultRefreshIntervalSeconds = 10;
+    public const int MinimumRefreshIntervalSeconds = 5;
+    public const int MaximumRefreshIntervalSeconds = 300;
+    public const int RefreshIntervalStepSeconds = 5;
 
     public static AgentBarSettings Default =>
-        new([], [], 60, true);
+        new([], [], DefaultRefreshIntervalSeconds, true);
 
     public AgentBarSettings Normalized()
     {
@@ -76,10 +83,12 @@ public sealed record AgentBarSettings(
         {
             Accounts = uniqueAccounts,
             MenuBarAccountIds = menuIds,
-            RefreshIntervalSeconds = Math.Clamp(
-                RefreshIntervalSeconds,
-                MinimumRefreshIntervalSeconds,
-                MaximumRefreshIntervalSeconds)
+            RefreshIntervalSeconds = NormalizeRefreshInterval(RefreshIntervalSeconds)
         };
     }
+
+    private static int NormalizeRefreshInterval(int seconds) =>
+        seconds <= 0
+            ? DefaultRefreshIntervalSeconds
+            : Math.Clamp(seconds, MinimumRefreshIntervalSeconds, MaximumRefreshIntervalSeconds);
 }

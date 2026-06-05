@@ -91,7 +91,9 @@ public partial class App : System.Windows.Application
         {
             while (!_timerCts.IsCancellationRequested)
             {
-                var delay = TimeSpan.FromSeconds(_coordinator?.Settings.RefreshIntervalSeconds ?? 60);
+                var delay = TimeSpan.FromSeconds(
+                    _coordinator?.Settings.RefreshIntervalSeconds
+                    ?? AgentBarSettings.DefaultRefreshIntervalSeconds);
                 await Task.Delay(delay, _timerCts.Token);
                 await RefreshIgnoringErrorsAsync();
             }

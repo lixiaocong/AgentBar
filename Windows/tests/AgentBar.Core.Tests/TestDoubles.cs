@@ -64,3 +64,34 @@ internal sealed class FixedCallbackServer(OAuthCallback callback) : ILocalCallba
         CancellationToken cancellationToken = default) =>
         Task.FromResult(callback with { Port = preferredPorts[0] });
 }
+
+internal sealed class FakeAgentQuotaServiceFactory(Func<ConfiguredAgentAccount, IAgentQuotaService> create)
+    : IAgentQuotaServiceFactory
+{
+    public IAgentQuotaService Create(ConfiguredAgentAccount account) => create(account);
+}
+
+internal sealed class FakeAgentQuotaService(
+    ConfiguredAgentAccount account,
+    AgentQuotaSnapshot? snapshot = null,
+    Exception? exception = null,
+    bool isAvailable = true)
+    : IAgentQuotaService
+{
+    public AgentProviderKind Provider => account.Provider;
+    public ConfiguredAgentAccount Account => account;
+    public bool IsAvailable => isAvailable;
+
+    public Task<AgentQuotaSnapshot> LoadSnapshotAsync(CancellationToken cancellationToken = default) =>
+        exception is not null
+            ? Task.FromException<AgentQuotaSnapshot>(exception)
+            : Task.FromResult(snapshot ?? new AgentQuotaSnapshot(
+                account.Provider,
+                "Test Account",
+                null,
+                null,
+                null,
+                "Test",
+                [],
+                DateTimeOffset.UtcNow));
+}

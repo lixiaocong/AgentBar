@@ -4,11 +4,12 @@ using System.Text.Json.Serialization;
 
 namespace AgentBar.Core;
 
-public sealed record AgentBarPathSet(string RootDirectory)
+public sealed record AgentBarPathSet(string RootDirectory, string? ClaudeDefaultDirectoryOverride = null)
 {
     public string SettingsFile => Path.Combine(RootDirectory, "settings.json");
     public string AuthVaultFile => Path.Combine(RootDirectory, "auth-vault.json.dpapi");
     public string AccountsRoot => Path.Combine(RootDirectory, "Accounts");
+    public string ClaudeDefaultDirectory => ClaudeDefaultDirectoryOverride ?? AgentBarPaths.ClaudeDefaultDirectory;
 
     public string AccountsDirectory(AgentProviderKind provider) =>
         Path.Combine(AccountsRoot, provider.StoredValue());

@@ -470,9 +470,9 @@ struct MenuBarView: View {
             .lineLimit(1)
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .background(tint.opacity(0.14), in: Capsule())
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
-                Capsule()
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .stroke(tint.opacity(0.20), lineWidth: 1)
             }
     }

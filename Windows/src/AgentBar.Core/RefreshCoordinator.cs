@@ -5,7 +5,7 @@ namespace AgentBar.Core;
 public sealed class RefreshCoordinator(
     ISettingsStore settingsStore,
     IAuthSessionStore authStore,
-    AgentQuotaServiceFactory serviceFactory,
+    IAgentQuotaServiceFactory serviceFactory,
     AgentBarPathSet? paths = null)
 {
     private readonly AgentBarPathSet _paths = paths ?? AgentBarPaths.Default;
@@ -24,13 +24,8 @@ public sealed class RefreshCoordinator(
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        _settings = (await settingsStore.LoadAsync(cancellationToken)).Normalized();
-        _statuses = _settings.Accounts.Select(account => new AgentAccountStatus(
-            account,
-            null,
-            null,
-            null,
-            CredentialsDetected(account))).ToArray();
+        _settings = await LoadSettingsAsync(cancellationToken);
+        _statuses = await BuildInitialStatusesAsync(_settings.Accounts, cancellationToken);
         Updated?.Invoke(this, EventArgs.Empty);
     }
 
@@ -39,9 +34,34 @@ public sealed class RefreshCoordinator(
         await _refreshGate.WaitAsync(cancellationToken);
         try
         {
-            _settings = (await settingsStore.LoadAsync(cancellationToken)).Normalized();
-            var tasks = _settings.Accounts.Select(account => RefreshAccountAsync(account, cancellationToken)).ToArray();
-            _statuses = await Task.WhenAll(tasks);
+            _settings = await LoadSettingsAsync(cancellationToken);
+            var previousById = _statuses.ToDictionary(status => status.Id, StringComparer.OrdinalIgnoreCase);
+            var tasks = _settings.Accounts
+                .Select(account => RefreshAccountAsync(
+                    account,
+                    previousById.GetValueOrDefault(account.Id),
+                    cancellationToken))
+                .ToArray();
+            var results = await Task.WhenAll(tasks);
+            var invalidatedAccounts = results
+                .Where(result => result.InvalidatesStoredLogin)
+                .Select(result => result.Status.Account)
+                .ToArray();
+
+            if (invalidatedAccounts.Length > 0)
+            {
+                _settings = await RemoveInvalidatedAccountsAsync(_settings, invalidatedAccounts, cancellationToken);
+                var removedIds = invalidatedAccounts.Select(account => account.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _statuses = results
+                    .Select(result => result.Status)
+                    .Where(status => !removedIds.Contains(status.Id))
+                    .ToArray();
+            }
+            else
+            {
+                _statuses = results.Select(result => result.Status).ToArray();
+            }
+
             Updated?.Invoke(this, EventArgs.Empty);
         }
         finally
@@ -81,9 +101,15 @@ public sealed class RefreshCoordinator(
 
     public async Task AddClaudeDirectoryAsync(string? directory = null, CancellationToken cancellationToken = default)
     {
-        var path = string.IsNullOrWhiteSpace(directory) ? AgentBarPaths.ClaudeDefaultDirectory : directory.Trim();
+        var path = string.IsNullOrWhiteSpace(directory) ? _paths.ClaudeDefaultDirectory : directory.Trim();
+        var account = new ConfiguredAgentAccount(AgentProviderKind.Claude, new ConfiguredAccountDirectory(path));
+        if (!CredentialsDetected(account))
+        {
+            throw new InvalidOperationException($"Claude credentials were not found in {path}.");
+        }
+
         await AddOrUpdateAccountAsync(
-            new ConfiguredAgentAccount(AgentProviderKind.Claude, new ConfiguredAccountDirectory(path)),
+            account,
             showInTray: true,
             cancellationToken);
     }
@@ -163,25 +189,39 @@ public sealed class RefreshCoordinator(
         await InitializeAsync(cancellationToken);
     }
 
-    private async Task<AgentAccountStatus> RefreshAccountAsync(
+    private async Task<RefreshAccountResult> RefreshAccountAsync(
         ConfiguredAgentAccount account,
+        AgentAccountStatus? previous,
         CancellationToken cancellationToken)
     {
+        var label = previous?.DisplayLabel ?? await StoredAccountLabelAsync(account, cancellationToken);
         try
         {
             var service = serviceFactory.Create(account);
             var detected = CredentialsDetected(account) || service.IsAvailable;
             if (!detected)
             {
-                return new AgentAccountStatus(account, null, null, "Credentials not found.", false);
+                return new RefreshAccountResult(
+                    new AgentAccountStatus(account, label, null, "Credentials not found.", false),
+                    false);
             }
 
             var snapshot = await service.LoadSnapshotAsync(cancellationToken);
-            return new AgentAccountStatus(account, snapshot.AccountLabel, snapshot, null, true);
+            return new RefreshAccountResult(
+                new AgentAccountStatus(account, snapshot.AccountLabel, snapshot, null, true),
+                false);
+        }
+        catch (Exception ex) when (ShouldInvalidateStoredLogin(account, ex))
+        {
+            return new RefreshAccountResult(
+                new AgentAccountStatus(account, label, null, InvalidatedLoginMessage(account), CredentialsDetected(account)),
+                true);
         }
         catch (Exception ex)
         {
-            return new AgentAccountStatus(account, null, null, ex.Message, CredentialsDetected(account));
+            return new RefreshAccountResult(
+                new AgentAccountStatus(account, label, null, ex.Message, CredentialsDetected(account)),
+                false);
         }
     }
 
@@ -190,7 +230,7 @@ public sealed class RefreshCoordinator(
         if (account.Provider == AgentProviderKind.Claude)
         {
             var directory = string.IsNullOrWhiteSpace(account.Directory.Path)
-                ? AgentBarPaths.ClaudeDefaultDirectory
+                ? _paths.ClaudeDefaultDirectory
                 : account.Directory.Path;
             return File.Exists(Path.Combine(directory, ".credentials.json"))
                 || File.Exists(Path.Combine(directory, "auth.json"));
@@ -204,6 +244,110 @@ public sealed class RefreshCoordinator(
         var directory = _paths.AccountDirectory(session.Provider, session.LocalAccountId);
         return new ConfiguredAgentAccount(session.Provider, new ConfiguredAccountDirectory(directory));
     }
+
+    private async Task<AgentBarSettings> LoadSettingsAsync(CancellationToken cancellationToken)
+    {
+        var settings = (await settingsStore.LoadAsync(cancellationToken)).Normalized();
+        var withDefaultClaude = AddDetectedDefaultClaudeAccount(settings);
+        if (withDefaultClaude.Accounts.Count != settings.Accounts.Count)
+        {
+            await settingsStore.SaveAsync(withDefaultClaude, cancellationToken);
+        }
+
+        return withDefaultClaude.Normalized();
+    }
+
+    private AgentBarSettings AddDetectedDefaultClaudeAccount(AgentBarSettings settings)
+    {
+        if (settings.Accounts.Any(account => account.Provider == AgentProviderKind.Claude))
+        {
+            return settings;
+        }
+
+        var account = new ConfiguredAgentAccount(
+            AgentProviderKind.Claude,
+            new ConfiguredAccountDirectory(_paths.ClaudeDefaultDirectory));
+        if (!CredentialsDetected(account))
+        {
+            return settings;
+        }
+
+        return settings with
+        {
+            Accounts = settings.Accounts.Concat([account]).ToArray()
+        };
+    }
+
+    private async Task<IReadOnlyList<AgentAccountStatus>> BuildInitialStatusesAsync(
+        IReadOnlyList<ConfiguredAgentAccount> accounts,
+        CancellationToken cancellationToken)
+    {
+        var tasks = accounts.Select(async account => new AgentAccountStatus(
+            account,
+            await StoredAccountLabelAsync(account, cancellationToken),
+            null,
+            null,
+            CredentialsDetected(account)));
+        return await Task.WhenAll(tasks);
+    }
+
+    private async Task<string?> StoredAccountLabelAsync(
+        ConfiguredAgentAccount account,
+        CancellationToken cancellationToken)
+    {
+        if (account.Provider == AgentProviderKind.Claude)
+        {
+            return null;
+        }
+
+        try
+        {
+            var session = await authStore.LoadAsync(
+                account.Provider,
+                LocalAccountIdFromDirectory(account),
+                cancellationToken);
+            return string.IsNullOrWhiteSpace(session?.AccountLabel) ? null : session.AccountLabel;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<AgentBarSettings> RemoveInvalidatedAccountsAsync(
+        AgentBarSettings settings,
+        IReadOnlyList<ConfiguredAgentAccount> accounts,
+        CancellationToken cancellationToken)
+    {
+        var removedIds = accounts.Select(account => account.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var updated = settings with
+        {
+            Accounts = settings.Accounts
+                .Where(account => !removedIds.Contains(account.Id))
+                .ToArray(),
+            MenuBarAccountIds = settings.MenuBarAccountIds
+                .Where(id => !removedIds.Contains(id))
+                .ToArray()
+        };
+        await settingsStore.SaveAsync(updated, cancellationToken);
+
+        foreach (var account in accounts.Where(account => account.Provider is not AgentProviderKind.Claude))
+        {
+            await authStore.DeleteAsync(account.Provider, LocalAccountIdFromDirectory(account), cancellationToken);
+        }
+
+        return updated.Normalized();
+    }
+
+    private static bool ShouldInvalidateStoredLogin(ConfiguredAgentAccount account, Exception exception) =>
+        account.Provider == AgentProviderKind.Gemini
+        && exception is ProviderQuotaException { InvalidatesStoredLogin: true };
+
+    private static string InvalidatedLoginMessage(ConfiguredAgentAccount account) => account.Provider switch
+    {
+        AgentProviderKind.Gemini => "Stored Gemini login expired and was removed locally. Sign in again from AgentBar settings.",
+        _ => "Stored login expired. Sign in again from AgentBar settings."
+    };
 
     private static string LocalAccountIdFromDirectory(ConfiguredAgentAccount account)
     {
@@ -292,4 +436,6 @@ public sealed class RefreshCoordinator(
         });
         return string.Join(Environment.NewLine, lines);
     }
+
+    private sealed record RefreshAccountResult(AgentAccountStatus Status, bool InvalidatesStoredLogin);
 }

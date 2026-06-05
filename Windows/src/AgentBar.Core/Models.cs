@@ -64,11 +64,11 @@ public static class AgentProviderKindExtensions
 
     public static string MenuBarShortPrefix(this AgentProviderKind provider) => provider switch
     {
-        AgentProviderKind.Codex => "C",
-        AgentProviderKind.GitHubCopilot => "P",
-        AgentProviderKind.Gemini => "G",
-        AgentProviderKind.Claude => "Cl",
-        AgentProviderKind.Junie => "J",
+        AgentProviderKind.Codex => "cx",
+        AgentProviderKind.GitHubCopilot => "cp",
+        AgentProviderKind.Gemini => "gm",
+        AgentProviderKind.Claude => "cl",
+        AgentProviderKind.Junie => "jn",
         _ => "?"
     };
 
