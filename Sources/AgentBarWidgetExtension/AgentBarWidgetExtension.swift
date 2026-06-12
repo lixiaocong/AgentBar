@@ -196,8 +196,10 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     var body: some View {
+        let accent = selectedProvider.map { providerStyle(for: $0.provider).tint } ?? Color.green
+
         ZStack {
-            widgetBackground
+            widgetBackground(accent: accent)
 
             if let selectedProvider {
                 providerContent(selectedProvider)
@@ -215,7 +217,7 @@ struct AgentBarDesktopWidgetView: View {
         }
         .foregroundStyle(palette.primaryText)
         .containerBackground(for: .widget) {
-            widgetBackground
+            widgetBackground(accent: accent)
         }
     }
 
@@ -223,8 +225,8 @@ struct AgentBarDesktopWidgetView: View {
     private func providerContent(_ state: AgentWidgetProviderState) -> some View {
         let metrics = displayMetrics(for: state)
 
-        VStack(alignment: .leading, spacing: 7) {
-            header(state)
+        VStack(alignment: .leading, spacing: 8) {
+            header(state, headlineMetric: metrics.first)
 
             if let error = state.errorMessage {
                 Text(error)
@@ -234,10 +236,6 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 0)
             } else if !metrics.isEmpty {
                 metricsStack(Array(metrics.prefix(2)))
-
-                if let snapshot = state.snapshot {
-                    widgetFooter(snapshot)
-                }
             } else if let snapshot = state.snapshot {
                 HStack(spacing: 8) {
                     if let context = snapshotContext(for: state, snapshot: snapshot) {
@@ -264,19 +262,24 @@ struct AgentBarDesktopWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func header(_ state: AgentWidgetProviderState) -> some View {
+    private func header(
+        _ state: AgentWidgetProviderState,
+        headlineMetric: AgentQuotaMetric?
+    ) -> some View {
         let style = providerStyle(for: state.provider)
+        let headlineTint = headlineMetric.map(quotaTint(for:)) ?? style.tint
 
-        return HStack(alignment: .center, spacing: 8) {
+        return HStack(alignment: .center, spacing: 9) {
             providerIconBadge(style)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(state.provider.title)
-                        .font(.system(.headline, design: .rounded).weight(.semibold))
+                        .font(.system(.caption, design: .rounded).weight(.heavy))
+                        .foregroundStyle(style.tint)
+                        .textCase(.uppercase)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
-                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
                     if let plan = userFacingPlanLabel(state.snapshot?.planType) {
                         detailPill(label: "", value: plan)
@@ -286,7 +289,7 @@ struct AgentBarDesktopWidgetView: View {
 
                 if let accountLabel = AgentBarWidgetAccountValue.accountSubtitle(for: state) {
                     Text(accountLabel)
-                        .font(.callout.weight(.bold))
+                        .font(.system(.subheadline, design: .rounded).weight(.heavy))
                         .foregroundStyle(palette.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -296,9 +299,21 @@ struct AgentBarDesktopWidgetView: View {
 
             Spacer(minLength: 0)
 
-            Circle()
-                .fill(style.tint)
-                .frame(width: 7, height: 7)
+            if let headlineMetric {
+                VStack(alignment: .trailing, spacing: -1) {
+                    Text(headlineMetric.percentText)
+                        .font(.system(.title, design: .rounded).weight(.heavy))
+                        .monospacedDigit()
+                        .foregroundStyle(headlineTint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+
+                    Text("left")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(palette.secondaryText)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
         }
     }
 
@@ -322,8 +337,8 @@ struct AgentBarDesktopWidgetView: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 QuotaMetricTitle(title: metric.title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(palette.secondaryText)
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundStyle(palette.primaryText)
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .help(metric.title)
 
@@ -346,7 +361,7 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 4)
 
                 if let resetsAt = metric.resetsAt {
-                    Text("Reset \(resetsAt.formatted(date: .omitted, time: .shortened))")
+                    Text("Resets \(resetsAt.formatted(date: .omitted, time: .shortened))")
                         .lineLimit(1)
                 }
             }
@@ -382,7 +397,7 @@ struct AgentBarDesktopWidgetView: View {
                 .font(.system(.caption, design: .rounded).weight(.bold))
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .background(palette.pillBackground, in: Capsule())
     }
 
@@ -463,30 +478,15 @@ struct AgentBarDesktopWidgetView: View {
             return []
         }
 
-        guard state.provider == .codex else {
-            return metrics
-        }
-
         return metrics.enumerated()
             .sorted { lhs, rhs in
-                let leftPriority = codexMetricDisplayPriority(lhs.element)
-                let rightPriority = codexMetricDisplayPriority(rhs.element)
-
-                if leftPriority != rightPriority {
-                    return leftPriority < rightPriority
+                if lhs.element.remainingPercent != rhs.element.remainingPercent {
+                    return lhs.element.remainingPercent < rhs.element.remainingPercent
                 }
 
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
-    }
-
-    private func codexMetricDisplayPriority(_ metric: AgentQuotaMetric) -> Int {
-        isCodexWeeklyMetric(metric) ? 0 : 1
-    }
-
-    private func isCodexWeeklyMetric(_ metric: AgentQuotaMetric) -> Bool {
-        metric.id == "window-10080" || metric.title.localizedCaseInsensitiveContains("7 day")
     }
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
@@ -518,11 +518,11 @@ struct AgentBarDesktopWidgetView: View {
             .resizable()
             .renderingMode(.original)
             .scaledToFit()
-            .frame(width: 18, height: 18)
-            .frame(width: 28, height: 28)
-            .background(palette.pillBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(width: 20, height: 20)
+            .frame(width: 34, height: 34)
+            .background(palette.pillBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .stroke(style.tint.opacity(0.20), lineWidth: 1)
             }
     }
@@ -542,10 +542,19 @@ struct AgentBarDesktopWidgetView: View {
         }
     }
 
-    private var widgetBackground: some View {
+    private func widgetBackground(accent: Color) -> some View {
         ZStack {
             LinearGradient(
                 colors: [palette.backgroundTop, palette.backgroundBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            LinearGradient(
+                colors: [
+                    accent.opacity(colorScheme == .dark ? 0.20 : 0.12),
+                    accent.opacity(colorScheme == .dark ? 0.08 : 0.04)
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )

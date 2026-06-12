@@ -28,6 +28,14 @@ unregister_bundle() {
     fi
 }
 
+refresh_widgetkit_services() {
+    # Replacing a widget-bearing app can leave chronod/ControlCenter holding a
+    # stale extension descriptor and make the widget disappear from the gallery.
+    killall chronod >/dev/null 2>&1 || true
+    killall ControlCenter >/dev/null 2>&1 || true
+    killall NotificationCenter >/dev/null 2>&1 || true
+}
+
 cd "$PROJECT_DIR"
 
 echo "==> Clearing stale AgentBar build registrations"
@@ -162,6 +170,9 @@ if command -v pluginkit >/dev/null 2>&1; then
 fi
 
 touch "$INSTALL_PATH"
+
+echo "==> Refreshing WidgetKit services"
+refresh_widgetkit_services
 
 echo "==> Removing temporary app bundle"
 rm -rf "$APP_BUNDLE"
