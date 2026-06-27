@@ -102,6 +102,11 @@ final class AppModel {
         set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .claude) }
     }
 
+    var zaiSnapshot: AgentQuotaSnapshot? {
+        get { summarySnapshot(for: .zai) }
+        set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .zai) }
+    }
+
     var junieSnapshot: AgentQuotaSnapshot? {
         get { summarySnapshot(for: .junie) }
         set { setPrimaryAccountState(snapshot: newValue, error: nil, for: .junie) }
@@ -125,6 +130,11 @@ final class AppModel {
     var claudeError: String? {
         get { summaryError(for: .claude) }
         set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .claude) }
+    }
+
+    var zaiError: String? {
+        get { summaryError(for: .zai) }
+        set { setPrimaryAccountState(snapshot: nil, error: newValue, for: .zai) }
     }
 
     var junieError: String? {
@@ -256,6 +266,10 @@ final class AppModel {
 
     var claudeUsedPercent: Double? {
         usedPercent(for: .claude)
+    }
+
+    var zaiUsedPercent: Double? {
+        usedPercent(for: .zai)
     }
 
     var junieUsedPercent: Double? {
@@ -429,6 +443,72 @@ final class AppModel {
         }
     }
 
+    @discardableResult
+    func addZAICodingPlanCredential(
+        _ rawToken: String,
+        baseURL rawBaseURL: String = ZAIQuotaService.defaultMonitorBaseURL.absoluteString
+    ) -> AddZAICodingPlanCredentialResult {
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            return .emptyToken
+        }
+
+        let baseURL: URL
+        do {
+            baseURL = try ZAIQuotaService.normalizedMonitorBaseURL(from: rawBaseURL)
+        } catch {
+            return .invalidBaseURL
+        }
+
+        let accountID = Self.stableZAIAccountID(for: token, baseURL: baseURL)
+        let directoryURL = AgentProviderAppAuthStore.accountDirectory(
+            for: .zai,
+            accountID: accountID
+        )
+        let directory = ConfiguredAccountDirectory(path: directoryURL.path)
+        guard !configuredAccounts(for: .zai).contains(directory) else {
+            return .duplicate
+        }
+
+        do {
+            let session = AgentProviderStoredAuthSession(
+                provider: .zai,
+                accountID: accountID,
+                accountLabel: "Z.ai Coding Plan",
+                accessToken: token,
+                refreshToken: nil,
+                expiryDate: nil,
+                scopes: [
+                    "zai-coding-plan",
+                    ZAIQuotaService.baseURLScopeValue(from: baseURL)
+                ],
+                lastRefresh: Date()
+            )
+            try AgentProviderAppAuthStore.save(session: session)
+            try AgentProviderAppAuthStore.ensureAccountDirectoryExists(
+                for: .zai,
+                accountID: accountID
+            )
+            let result = addConfiguredAccountDirectory(path: directoryURL.path, for: .zai)
+            switch result {
+            case .added:
+                persistStoredAccountLabelIfNeeded(
+                    for: ConfiguredAgentAccount(provider: .zai, directory: directory),
+                    accountLabel: session.accountLabel
+                )
+                return .added
+            case .duplicate:
+                return .duplicate
+            case .emptyPath, .browserLoginRequired:
+                return .saveFailed("Z.ai Coding Plan credential was saved, but AgentBar could not save the account reference.")
+            case .credentialsFileMissing(let path):
+                return .saveFailed("Z.ai Coding Plan credential was saved, but AgentBar could not find the saved account at \(path).")
+            }
+        } catch {
+            return .saveFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
     func removeConfiguredAccount(_ account: ConfiguredAgentAccount) {
         if account.provider == .codex,
            let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url) {
@@ -507,7 +587,7 @@ final class AppModel {
         switch provider {
         case .codex, .githubCopilot, .gemini:
             return true
-        case .claude, .junie:
+        case .claude, .zai, .junie:
             return false
         }
     }
@@ -519,6 +599,8 @@ final class AppModel {
                 providerLoginErrors[provider] = "Claude accounts are read from Claude Code auth.json. Add a directory containing auth.json instead of browser sign-in."
             case .junie:
                 providerLoginErrors[provider] = "Junie accounts must be added with a Junie API token from AgentBar settings."
+            case .zai:
+                providerLoginErrors[provider] = "Z.ai accounts must be added with a Coding Plan credential from AgentBar settings."
             case .codex, .githubCopilot, .gemini:
                 break
             }
@@ -552,7 +634,7 @@ final class AppModel {
                     }
                 case .gemini:
                     session = try await GeminiBrowserLoginService().signIn(forceAccountSelection: forceAccountSelection)
-                case .codex, .claude, .junie:
+                case .codex, .claude, .zai, .junie:
                     return
                 }
 
@@ -771,6 +853,7 @@ final class AppModel {
             githubCopilot: hasAvailableAccount(for: .githubCopilot),
             gemini: hasAvailableAccount(for: .gemini),
             claude: hasAvailableAccount(for: .claude),
+            zai: hasAvailableAccount(for: .zai),
             junie: hasAvailableAccount(for: .junie)
         )
     }
@@ -1216,6 +1299,8 @@ final class AppModel {
             return "gm"
         case .claude:
             return "cl"
+        case .zai:
+            return "za"
         case .junie:
             return "jn"
         }
@@ -1269,7 +1354,7 @@ final class AppModel {
                 .filter(CodexAppAuthStore.isAppManagedAccountDirectory)
         }
 
-        if provider == .githubCopilot || provider == .gemini || provider == .junie {
+        if provider == .githubCopilot || provider == .gemini || provider == .zai || provider == .junie {
             return ConfiguredAccountDirectory
                 .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
                 .filter { AgentProviderAppAuthStore.isAppManagedAccountDirectory($0, provider: provider) }
@@ -1331,6 +1416,15 @@ final class AppModel {
         return "junie-\(prefix)"
     }
 
+    private static func stableZAIAccountID(for token: String, baseURL: URL) -> String {
+        let material = "\(baseURL.absoluteString)\n\(token)"
+        let digest = SHA256.hash(data: Data(material.utf8))
+        let prefix = digest.prefix(16).map { byte in
+            String(format: "%02x", byte)
+        }.joined()
+        return "zai-\(prefix)"
+    }
+
     private func persistWidgetState() {
         do {
             try AgentWidgetStateStore().save(currentWidgetState())
@@ -1376,6 +1470,14 @@ final class AppModel {
         case added
         case emptyToken
         case duplicate
+        case saveFailed(String)
+    }
+
+    enum AddZAICodingPlanCredentialResult: Equatable {
+        case added
+        case emptyToken
+        case duplicate
+        case invalidBaseURL
         case saveFailed(String)
     }
 

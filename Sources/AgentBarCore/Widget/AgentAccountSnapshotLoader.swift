@@ -17,6 +17,10 @@ public enum AgentAccountSnapshotLoader {
             return ClaudeQuotaService(
                 installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
             ).isAvailable
+        case .zai:
+            return ZAIQuotaService(
+                installation: zaiInstallation(for: account)
+            ).isAvailable
         case .junie:
             return JunieQuotaService(
                 installation: junieInstallation(for: account)
@@ -41,6 +45,10 @@ public enum AgentAccountSnapshotLoader {
         case .claude:
             return try await ClaudeQuotaService(
                 installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
+            ).loadSnapshot()
+        case .zai:
+            return try await ZAIQuotaService(
+                installation: zaiInstallation(for: account)
             ).loadSnapshot()
         case .junie:
             return try await JunieQuotaService(
@@ -91,6 +99,17 @@ public enum AgentAccountSnapshotLoader {
         }
 
         return JunieInstallation(configDirectory: account.directory.url)
+    }
+
+    private static func zaiInstallation(for account: ConfiguredAgentAccount) -> ZAIInstallation {
+        if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: .zai
+        ) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return ZAIInstallation(configDirectory: account.directory.url)
     }
 }
 

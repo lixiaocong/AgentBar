@@ -12,6 +12,7 @@ struct SettingsView: View {
     ]
     @State private var addAccountProvider: AgentProviderKind?
     @State private var isAddingJunieToken = false
+    @State private var isAddingZAICredential = false
 
     var body: some View {
         @Bindable var model = model
@@ -66,6 +67,9 @@ struct SettingsView: View {
         .sheet(isPresented: $isAddingJunieToken) {
             AddJunieTokenSheet(model: model)
         }
+        .sheet(isPresented: $isAddingZAICredential) {
+            AddZAICodingPlanCredentialSheet(model: model)
+        }
     }
 
     @ViewBuilder
@@ -106,6 +110,10 @@ struct SettingsView: View {
                 } else if provider == .junie {
                     Button(hasConfiguredAccounts ? "Add Another Junie Token..." : "Add Junie Token...") {
                         isAddingJunieToken = true
+                    }
+                } else if provider == .zai {
+                    Button(hasConfiguredAccounts ? "Add Another Coding Plan..." : "Add Coding Plan...") {
+                        isAddingZAICredential = true
                     }
                 } else if provider == .claude {
                     Button(hasConfiguredAccounts ? "Add Another Auth Directory..." : "Add Claude Auth Directory...") {
@@ -211,6 +219,8 @@ struct SettingsView: View {
             return "Gemini Code Assist"
         case .claude:
             return "Claude Code"
+        case .zai:
+            return "Z.ai Coding Plan"
         case .junie:
             return "Junie"
         }
@@ -371,4 +381,77 @@ private struct AddJunieTokenSheet: View {
             errorMessage = message
         }
     }
+}
+
+private struct AddZAICodingPlanCredentialSheet: View {
+    let model: AppModel
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var token = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Z.ai Coding Plan")
+                .font(.title3.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Coding Plan token")
+                    .font(.caption.weight(.semibold))
+
+                SecureField(
+                    "",
+                    text: $token,
+                    prompt: Text("Z.ai Coding Plan token")
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                Button("Open Usage Page") {
+                    NSWorkspace.shared.open(ZAIQuotaService.codingPlanUsagePageURL)
+                }
+
+                Spacer()
+
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+
+                Button("Add") {
+                    submit()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+    }
+
+    private func submit() {
+        switch model.addZAICodingPlanCredential(token) {
+        case .added:
+            dismiss()
+        case .emptyToken:
+            errorMessage = "Enter a Z.ai Coding Plan token."
+        case .duplicate:
+            errorMessage = "That Z.ai account is already configured."
+        case .invalidBaseURL:
+            errorMessage = "Only the international Z.ai host is supported."
+        case .saveFailed(let message):
+            errorMessage = message
+        }
+    }
+
 }

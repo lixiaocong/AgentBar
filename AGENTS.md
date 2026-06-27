@@ -106,6 +106,17 @@ Supported tiers:
 | `legacy-tier` | Legacy |
 | `standard-tier` | Standard |
 
+### Z.ai Coding Plan (`AgentProviderKind.zai`)
+
+| Property | Value |
+|---|---|
+| API endpoint | `GET https://api.z.ai/api/monitor/usage/quota/limit` |
+| Auth headers | `Authorization: Bearer <coding_plan_token>` with raw-token retry for compatibility |
+| Credentials source | AgentBar Z.ai Coding Plan credential stored in macOS Keychain |
+| Displayed metrics | Dynamic `limits[]` list returned by the usage monitor API, including 5-hour token, weekly token, and MCP/monthly limits when present |
+
+Only the international Z.ai host is supported. The service uses `https://api.z.ai` for monitor data and the settings link opens `https://z.ai/manage-apikey/coding-plan/personal/usage`. Do not call the general pay-as-you-go endpoint for quota data.
+
 ---
 
 ## Data model
@@ -140,8 +151,10 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 - GitHub Copilot: `~/Library/Application Support/AgentBar/GitHubCopilotAccounts`
 - Gemini: `~/Library/Application Support/AgentBar/GeminiAccounts`
 - Claude: `~/.config/claude-code/auth.json` (read-only local Claude Code auth detection)
+- Z.ai: `~/Library/Application Support/AgentBar/ZAIAccounts`
+- Junie: `~/Library/Application Support/AgentBar/JunieAccounts`
 
-AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, or Gemini by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
+AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, Gemini, Z.ai, or Junie by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
 
 ---
 

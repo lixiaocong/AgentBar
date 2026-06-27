@@ -33,6 +33,8 @@ enum MenuBarStatusImage {
                 return "gm"
             case .claude:
                 return "cl"
+            case .zai:
+                return "za"
             case .junie:
                 return "jn"
             case nil:

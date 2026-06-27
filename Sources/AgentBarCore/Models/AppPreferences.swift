@@ -49,6 +49,8 @@ extension AgentProviderKind {
             return ConfiguredAccountDirectory(path: AgentProviderAppAuthStore.accountsDirectory(for: .gemini).path)
         case .claude:
             return ConfiguredAccountDirectory(path: ClaudeCLIInstallation.defaultConfigDirectory.path)
+        case .zai:
+            return ConfiguredAccountDirectory(path: AgentProviderAppAuthStore.accountsDirectory(for: .zai).path)
         case .junie:
             return ConfiguredAccountDirectory(path: AgentProviderAppAuthStore.accountsDirectory(for: .junie).path)
         }
@@ -68,6 +70,8 @@ extension AgentProviderKind {
             return "AgentBar browser login"
         case .claude:
             return "auth.json"
+        case .zai:
+            return "AgentBar Z.ai Coding Plan credential"
         case .junie:
             return "AgentBar Junie API token"
         }

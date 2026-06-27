@@ -30,6 +30,7 @@ Current providers:
 - GitHub Copilot
 - Gemini Code Assist
 - Claude Code
+- Z.ai Coding Plan
 - Junie by JetBrains
 
 ## Run
@@ -89,6 +90,16 @@ It displays:
 AgentBar reads Claude Code auth from `~/.config/claude-code/auth.json` by default. You can also add another directory that contains `auth.json` from Settings.
 
 AgentBar does not currently show Claude quota windows because the app does not have a confirmed quota endpoint wired for Claude yet. The Claude card shows the detected local account and auth type.
+
+### Z.ai Coding Plan
+
+AgentBar stores a Z.ai Coding Plan credential in its own macOS Keychain vault. Add the token from Settings.
+
+It displays all quota limits returned by:
+
+- `GET https://api.z.ai/api/monitor/usage/quota/limit`
+
+Only the international Z.ai host is supported. The in-app settings link opens `https://z.ai/manage-apikey/coding-plan/personal/usage`.
 
 ### Junie
 

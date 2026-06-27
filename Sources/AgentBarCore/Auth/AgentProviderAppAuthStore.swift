@@ -147,6 +147,8 @@ public enum AgentProviderAppAuthStore {
             return "GeminiAccounts"
         case .claude:
             return "ClaudeAccounts"
+        case .zai:
+            return "ZAIAccounts"
         case .junie:
             return "JunieAccounts"
         }

@@ -505,6 +505,8 @@ struct MenuBarView: View {
             return ProviderHeaderStyle(eyebrow: "GOOGLE", title: "Gemini", assetName: "ProviderLogoGemini", tint: .green)
         case .claude:
             return ProviderHeaderStyle(eyebrow: "ANTHROPIC", title: "Claude", assetName: "ProviderLogoClaude", tint: .purple)
+        case .zai:
+            return ProviderHeaderStyle(eyebrow: "Z.AI", title: "GLM", assetName: "ProviderLogoZAI", tint: .blue)
         case .junie:
             return ProviderHeaderStyle(eyebrow: "JETBRAINS", title: "Junie", assetName: "ProviderLogoJunie", tint: .orange)
         }

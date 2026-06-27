@@ -174,7 +174,7 @@ struct AgentBarDesktopWidget: Widget {
             AgentBarDesktopWidgetView(entry: entry)
         }
         .configurationDisplayName("Agent Bar")
-        .description("See one Codex, Copilot, Gemini, Claude, or Junie account on your desktop.")
+        .description("See one Codex, Copilot, Gemini, Claude, Z.ai, or Junie account on your desktop.")
         .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }
@@ -537,6 +537,8 @@ struct AgentBarDesktopWidgetView: View {
             return WidgetProviderStyle(assetName: "ProviderLogoGemini", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.healthy))
         case .claude:
             return WidgetProviderStyle(assetName: "ProviderLogoClaude", tint: Color.purple)
+        case .zai:
+            return WidgetProviderStyle(assetName: "ProviderLogoZAI", tint: Color.blue)
         case .junie:
             return WidgetProviderStyle(assetName: "ProviderLogoJunie", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.low))
         }
