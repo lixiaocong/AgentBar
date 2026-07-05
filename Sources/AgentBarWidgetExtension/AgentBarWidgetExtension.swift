@@ -236,10 +236,21 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 0)
             } else if !metrics.isEmpty {
                 metricsStack(Array(metrics.prefix(2)))
+                if let resetSummary = resetCreditsSummary(state.snapshot?.resetCredits) {
+                    Text(resetSummary)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(palette.secondaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
             } else if let snapshot = state.snapshot {
                 HStack(spacing: 8) {
                     if let context = snapshotContext(for: state, snapshot: snapshot) {
                         detailPill(label: context.label, value: context.value)
+                    }
+                    if let resetCredits = snapshot.resetCredits,
+                       resetCredits.hasAvailableCredits {
+                        detailPill(label: "", value: compactResetCreditCount(resetCredits.visibleAvailableCount))
                     }
                     detailPill(label: "Updated", value: snapshot.updatedAt.formatted(date: .omitted, time: .shortened))
                 }
@@ -283,6 +294,12 @@ struct AgentBarDesktopWidgetView: View {
 
                     if let plan = userFacingPlanLabel(state.snapshot?.planType) {
                         detailPill(label: "", value: plan)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+
+                    if let resetCredits = state.snapshot?.resetCredits,
+                       resetCredits.hasAvailableCredits {
+                        detailPill(label: "", value: compactResetCreditCount(resetCredits.visibleAvailableCount))
                             .fixedSize(horizontal: true, vertical: false)
                     }
                 }
@@ -368,6 +385,28 @@ struct AgentBarDesktopWidgetView: View {
             .font(.caption2)
             .foregroundStyle(palette.secondaryText)
         }
+    }
+
+    private func resetCreditsSummary(_ resetCredits: AgentQuotaResetCredits?) -> String? {
+        guard let resetCredits,
+              resetCredits.hasAvailableCredits else {
+            return nil
+        }
+
+        let dates = resetCredits.availableCredits
+            .prefix(3)
+            .compactMap(\.expiresAt)
+            .map { $0.formatted(date: .abbreviated, time: .omitted) }
+
+        guard !dates.isEmpty else {
+            return "\(compactResetCreditCount(resetCredits.visibleAvailableCount)) available"
+        }
+
+        return "\(compactResetCreditCount(resetCredits.visibleAvailableCount)) expiring \(dates.joined(separator: ", "))"
+    }
+
+    private func compactResetCreditCount(_ count: Int) -> String {
+        count == 1 ? "1 reset" : "\(count) resets"
     }
 
     private func quotaBar(value: Double, tint: Color) -> some View {
@@ -689,7 +728,30 @@ private extension AgentWidgetState {
                             resetsAt: nil
                         )
                     ],
-                    updatedAt: Date(timeIntervalSince1970: 1_776_240_000)
+                    updatedAt: Date(timeIntervalSince1970: 1_776_240_000),
+                    resetCredits: AgentQuotaResetCredits(
+                        availableCount: 3,
+                        credits: [
+                            AgentQuotaResetCredit(
+                                idSuffix: "e2907349",
+                                status: "available",
+                                resetType: "codex_rate_limits",
+                                expiresAt: Date(timeIntervalSince1970: 1_784_334_827)
+                            ),
+                            AgentQuotaResetCredit(
+                                idSuffix: "0284334e",
+                                status: "available",
+                                resetType: "codex_rate_limits",
+                                expiresAt: Date(timeIntervalSince1970: 1_785_109_119)
+                            ),
+                            AgentQuotaResetCredit(
+                                idSuffix: "983b2c15",
+                                status: "available",
+                                resetType: "codex_rate_limits",
+                                expiresAt: Date(timeIntervalSince1970: 1_785_527_970)
+                            ),
+                        ]
+                    )
                 ),
                 errorMessage: nil,
                 isAvailable: true

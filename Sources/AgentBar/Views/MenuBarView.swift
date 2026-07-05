@@ -181,6 +181,11 @@ struct MenuBarView: View {
                 } else {
                     metricsStack(snapshot.metrics)
                 }
+
+                if let resetCredits = snapshot.resetCredits,
+                   resetCredits.hasAvailableCredits {
+                    resetCreditsBlock(resetCredits, tint: statusTint)
+                }
             } else if let error = status.errorMessage {
                 Text(error)
                     .font(.caption)
@@ -230,6 +235,61 @@ struct MenuBarView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func resetCreditsBlock(
+        _ resetCredits: AgentQuotaResetCredits,
+        tint: Color
+    ) -> some View {
+        let availableCredits = Array(resetCredits.availableCredits.prefix(3))
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(resetCreditCountText(resetCredits.visibleAvailableCount))
+                    .font(.caption.weight(.heavy))
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if let expiresAt = resetCredits.nextExpiringCredit?.expiresAt {
+                    Text("Next \(shortResetCreditDate(expiresAt))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+
+            if !availableCredits.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(availableCredits.enumerated()), id: \.element.id) { index, credit in
+                        HStack(spacing: 8) {
+                            Text("Reset \(index + 1)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 4)
+
+                            Text(credit.expiresAt.map { shortResetCreditDate($0) } ?? "No expiration")
+                                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.primary.opacity(0.82))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(0.14), lineWidth: 1)
         }
     }
 
@@ -322,6 +382,14 @@ struct MenuBarView: View {
         }
 
         return normalized
+    }
+
+    private func resetCreditCountText(_ count: Int) -> String {
+        count == 1 ? "1 reset available" : "\(count) resets available"
+    }
+
+    private func shortResetCreditDate(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func accountBadges(provider: AgentProviderKind, snapshot: AgentQuotaSnapshot?) -> [String] {

@@ -49,7 +49,7 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
     public var subtitle: String {
         switch self {
         case .codex:
-            return "Reads the same 5-hour and weekly usage data shown on the ChatGPT Codex usage page."
+            return "Reads Codex usage windows and banked reset credits shown by ChatGPT."
         case .githubCopilot:
             return "Tracks monthly GitHub Copilot premium-request usage for one personal account."
         case .gemini:
@@ -215,6 +215,7 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
     public let sourceSummary: String
     public let metrics: [AgentQuotaMetric]
     public let updatedAt: Date
+    public let resetCredits: AgentQuotaResetCredits?
 
     public init(
         provider: AgentProviderKind,
@@ -224,7 +225,8 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
         modelName: String?,
         sourceSummary: String,
         metrics: [AgentQuotaMetric],
-        updatedAt: Date
+        updatedAt: Date,
+        resetCredits: AgentQuotaResetCredits? = nil
     ) {
         self.provider = provider
         self.accountLabel = accountLabel
@@ -234,12 +236,92 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
         self.sourceSummary = sourceSummary
         self.metrics = metrics
         self.updatedAt = updatedAt
+        self.resetCredits = resetCredits
     }
 
     public var highlightMetric: AgentQuotaMetric? {
         metrics.max { lhs, rhs in
             lhs.usedPercent < rhs.usedPercent
         } ?? metrics.first
+    }
+}
+
+public struct AgentQuotaResetCredits: Codable, Sendable, Equatable {
+    public let availableCount: Int
+    public let credits: [AgentQuotaResetCredit]
+
+    public init(
+        availableCount: Int,
+        credits: [AgentQuotaResetCredit] = []
+    ) {
+        self.availableCount = max(0, availableCount)
+        self.credits = credits
+    }
+
+    public var visibleAvailableCount: Int {
+        max(availableCount, availableCredits.count)
+    }
+
+    public var hasAvailableCredits: Bool {
+        visibleAvailableCount > 0
+    }
+
+    public var availableCredits: [AgentQuotaResetCredit] {
+        credits
+            .filter(\.isAvailable)
+            .sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case let (left?, right?):
+                    return left < right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return lhs.idSuffix < rhs.idSuffix
+                }
+            }
+    }
+
+    public var nextExpiringCredit: AgentQuotaResetCredit? {
+        availableCredits.first
+    }
+}
+
+public struct AgentQuotaResetCredit: Codable, Sendable, Equatable, Identifiable {
+    public let idSuffix: String
+    public let status: String
+    public let resetType: String
+    public let expiresAt: Date?
+    public let grantedAt: Date?
+    public let redeemedAt: Date?
+    public let redeemStartedAt: Date?
+
+    public init(
+        idSuffix: String,
+        status: String,
+        resetType: String,
+        expiresAt: Date?,
+        grantedAt: Date? = nil,
+        redeemedAt: Date? = nil,
+        redeemStartedAt: Date? = nil
+    ) {
+        self.idSuffix = idSuffix
+        self.status = status
+        self.resetType = resetType
+        self.expiresAt = expiresAt
+        self.grantedAt = grantedAt
+        self.redeemedAt = redeemedAt
+        self.redeemStartedAt = redeemStartedAt
+    }
+
+    public var id: String {
+        let expiration = expiresAt.map { String(Int($0.timeIntervalSince1970)) } ?? "unknown"
+        return "\(idSuffix)-\(expiration)"
+    }
+
+    public var isAvailable: Bool {
+        status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "available"
     }
 }
 
