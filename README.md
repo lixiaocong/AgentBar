@@ -33,6 +33,18 @@ Current providers:
 - Z.ai Coding Plan
 - Junie by JetBrains
 
+## Quota History
+
+AgentBar records every successfully returned quota window by provider and account. Open **History...** from the menu-bar popover or Settings to see the remaining balance over time, including confirmed resets and likely resets inferred from balance increases.
+
+- Recording is enabled by default.
+- Unchanged balances are sampled every 15 minutes; meaningful balance, label, reset-time, and unlimited-state changes are stored immediately.
+- History is kept locally until you clear data older than a chosen number of days or delete all history from Settings.
+- Removing an account does not remove its history.
+- Samples are recorded only while AgentBar is running.
+
+The local database is stored at `~/Library/Application Support/AgentBar/quota-history.sqlite3`. It contains quota metadata only, never credentials or complete API responses.
+
 ## Run
 
 ```bash

@@ -26,6 +26,7 @@ struct AgentBarApp: App {
 final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
     private var model: AppModel?
     private var settingsWindowController: AgentBarSettingsWindowController?
+    private var historyWindowController: AgentBarHistoryWindowController?
     private var statusController: AgentBarStatusController?
 
     func configure(model: AppModel) {
@@ -34,11 +35,25 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let model else { return }
-        let settingsWindowController = AgentBarSettingsWindowController(model: model)
+        let historyManager = QuotaHistoryManager.shared
+        historyManager.start()
+        let historyWindowController = AgentBarHistoryWindowController(
+            model: model,
+            historyManager: historyManager
+        )
+        self.historyWindowController = historyWindowController
+        let settingsWindowController = AgentBarSettingsWindowController(
+            model: model,
+            historyManager: historyManager,
+            openHistoryAction: { [weak historyWindowController] in
+                historyWindowController?.show(on: NSApp.keyWindow?.screen)
+            }
+        )
         self.settingsWindowController = settingsWindowController
         statusController = AgentBarStatusController(
             model: model,
-            settingsWindowController: settingsWindowController
+            settingsWindowController: settingsWindowController,
+            historyWindowController: historyWindowController
         )
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -48,6 +63,11 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.arguments.contains("--open-settings") {
             logInfo("Launch argument requested settings window")
             showSettings()
+        }
+
+        if ProcessInfo.processInfo.arguments.contains("--open-history") {
+            logInfo("Launch argument requested history window")
+            showHistory()
         }
 
         if ProcessInfo.processInfo.arguments.contains("--simulate-settings-button") {
@@ -61,6 +81,11 @@ final class AgentBarAppDelegate: NSObject, NSApplicationDelegate {
     func showSettings() {
         logInfo("Opening settings window")
         settingsWindowController?.show()
+    }
+
+    func showHistory() {
+        logInfo("Opening quota history window")
+        historyWindowController?.show(on: NSApp.keyWindow?.screen ?? NSScreen.main)
     }
 
     func applicationShouldHandleReopen(

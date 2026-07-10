@@ -7,6 +7,7 @@ import AgentBarCore
 
 struct MenuBarView: View {
     let model: AppModel
+    let openHistoryAction: () -> Void
     let openSettingsAction: () -> Void
     let onPreferredSizeChange: @MainActor (CGSize) -> Void
 
@@ -15,10 +16,12 @@ struct MenuBarView: View {
 
     init(
         model: AppModel,
+        openHistoryAction: @escaping () -> Void = {},
         openSettingsAction: @escaping () -> Void = {},
         onPreferredSizeChange: @escaping @MainActor (CGSize) -> Void = { _ in }
     ) {
         self.model = model
+        self.openHistoryAction = openHistoryAction
         self.openSettingsAction = openSettingsAction
         self.onPreferredSizeChange = onPreferredSizeChange
     }
@@ -547,6 +550,9 @@ struct MenuBarView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
+            Button("History…") {
+                openHistoryAction()
+            }
 
             Button("Settings…") {
                 openSettingsAction()

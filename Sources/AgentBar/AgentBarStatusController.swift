@@ -14,6 +14,7 @@ final class AgentBarStatusController: NSObject {
 
     private let model: AppModel
     private let settingsWindowController: AgentBarSettingsWindowController
+    private let historyWindowController: AgentBarHistoryWindowController
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private var hostingController: NSHostingController<MenuBarView>?
@@ -21,10 +22,12 @@ final class AgentBarStatusController: NSObject {
 
     init(
         model: AppModel,
-        settingsWindowController: AgentBarSettingsWindowController
+        settingsWindowController: AgentBarSettingsWindowController,
+        historyWindowController: AgentBarHistoryWindowController
     ) {
         self.model = model
         self.settingsWindowController = settingsWindowController
+        self.historyWindowController = historyWindowController
         super.init()
         configureStatusItem()
         configurePopover()
@@ -51,6 +54,9 @@ final class AgentBarStatusController: NSObject {
         let hostingController = NSHostingController(
             rootView: MenuBarView(
                 model: model,
+                openHistoryAction: { [weak self] in
+                    self?.showHistory()
+                },
                 openSettingsAction: { [weak self] in
                     self?.showSettings()
                 },
@@ -114,6 +120,16 @@ final class AgentBarStatusController: NSObject {
         let settingsWindowController = settingsWindowController
         DispatchQueue.main.async {
             settingsWindowController.show()
+        }
+    }
+
+    private func showHistory() {
+        logInfo("Opening quota history from status popover")
+        let screen = statusItem.button?.window?.screen
+        popover.performClose(nil)
+        let historyWindowController = historyWindowController
+        DispatchQueue.main.async {
+            historyWindowController.show(on: screen)
         }
     }
 

@@ -7,8 +7,16 @@ import AgentBarCore
 
 @MainActor
 final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(model: AppModel) {
-        let rootView = SettingsView(model: model)
+    init(
+        model: AppModel,
+        historyManager: QuotaHistoryManager,
+        openHistoryAction: @escaping () -> Void
+    ) {
+        let rootView = SettingsView(
+            model: model,
+            historyManager: historyManager,
+            openHistoryAction: openHistoryAction
+        )
             .frame(width: 420)
             .padding(20)
 

@@ -29,6 +29,7 @@ final class AppModel {
     private static let configuredAccountDirectoriesDefaultsKeyPrefix = "configuredAccountDirectories."
     private static let accountLabelsDefaultsKey = "configuredAccountLabels"
     private let userDefaults: UserDefaults
+    private let quotaHistoryRecorder: any QuotaHistoryRecording
     private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
     private var refreshTask: Task<Void, Never>?
     private var hasStarted = false
@@ -145,9 +146,11 @@ final class AppModel {
     init(
         userDefaults: UserDefaults = .standard,
         providerAvailabilityResolver: (@Sendable () -> AgentProviderAvailability)? = nil,
+        historyRecorder: (any QuotaHistoryRecording)? = nil,
         startImmediately: Bool = true
     ) {
         self.userDefaults = userDefaults
+        self.quotaHistoryRecorder = historyRecorder ?? QuotaHistoryManager.shared
         self.providerAvailabilityOverride = providerAvailabilityResolver
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
         self.accountLabelsByID = userDefaults.dictionary(forKey: Self.accountLabelsDefaultsKey) as? [String: String] ?? [:]
@@ -289,6 +292,22 @@ final class AppModel {
 
     func visibleAccountStatuses(for provider: AgentProviderKind) -> [AgentAccountStatus] {
         accountStatuses(for: provider).filter(\.shouldDisplayInMenu)
+    }
+
+    func isHistoryAccountConfigured(_ accountKey: String) -> Bool {
+        allConfiguredAccounts().contains {
+            QuotaHistoryIdentity.accountKey(for: $0) == accountKey
+        }
+    }
+
+    func currentHistoryMetricIDs(for accountKey: String) -> Set<String> {
+        guard let account = allConfiguredAccounts().first(where: {
+            QuotaHistoryIdentity.accountKey(for: $0) == accountKey
+        }) else {
+            return []
+        }
+
+        return Set(accountSnapshotsByID[account.id]?.metrics.map(\.id) ?? [])
     }
 
     func isAccountShownInMenuBar(_ account: ConfiguredAgentAccount) -> Bool {
@@ -1014,6 +1033,7 @@ final class AppModel {
                 }
                 setAccountState(snapshot: snapshot, error: nil, for: result.account)
                 persistStoredAccountLabelIfNeeded(for: result.account, accountLabel: snapshot.accountLabel)
+                quotaHistoryRecorder.record(account: result.account, snapshot: snapshot)
                 if let metric = snapshot.highlightMetric {
                     logInfo("\(result.account.provider.title) account \(snapshot.accountLabel) loaded — \(metric.percentText) remaining")
                 } else {

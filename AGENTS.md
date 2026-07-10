@@ -11,23 +11,23 @@ Codex, GitHub Copilot, and Gemini are displayed **simultaneously** after AgentBa
 
 ```
 Sources/AgentBar/
-├── AgentBarApp.swift          Entry point – MenuBarExtra + Settings scene
-├── AppModel.swift             @Observable view-model, tri-provider refresh loop
-├── AppLogger.swift            Shared logging helpers (os.Logger + stderr/stdout)
-├── Models/
-│   └── AgentQuotaModels.swift  AgentProviderKind, AgentQuotaSnapshot, AgentQuotaMetric
-├── Codex/
-│   └── CodexQuotaService.swift  Uses AgentBar Keychain auth, calls ChatGPT Codex backend API
-├── GitHubCopilot/
-│   └── GitHubCopilotQuotaService.swift  Uses AgentBar Keychain auth, calls copilot_internal/user API
-├── Gemini/
-│   └── GeminiQuotaService.swift  Uses AgentBar Keychain auth, calls Google Cloud Code Assist API
-├── OpenAI/
-│   └── KeychainSecretStore.swift  Generic Keychain read/write/delete helper
+├── AgentBarApp.swift          Entry point and app-delegate controller wiring
+├── AppModel.swift             @Observable view-model, multi-provider refresh loop
+├── AgentBarHistoryWindowController.swift  Singleton, multi-display History window lifecycle
+├── History/
+│   ├── QuotaHistoryStore.swift      SQLite schema, sampling, reset classification, queries
+│   ├── QuotaHistoryManager.swift    Shared recording preference, stats, maintenance state
+│   ├── QuotaHistoryModels.swift     History records, ranges, event types, downsampling
+│   └── QuotaHistoryViewModel.swift  Account/window selection and range loading
 └── Views/
-    ├── MenuBarView.swift       Tri-provider quota gauges, action buttons
-    └── SettingsView.swift      Credential status for all providers, open-config buttons
+    ├── MenuBarView.swift       Provider quota gauges and History/Settings actions
+    ├── QuotaHistoryView.swift  Account sidebar and per-window Swift Charts
+    └── SettingsView.swift      Credentials plus history recording and cleanup controls
 Sources/AgentBarCore/
+├── Models/AgentQuotaModels.swift        Shared provider, snapshot, and metric models
+├── Codex/CodexQuotaService.swift        ChatGPT Codex quota API
+├── GitHubCopilot/GitHubCopilotQuotaService.swift  Copilot quota API
+├── Gemini/GeminiQuotaService.swift      Code Assist quota API
 └── Widget/
     ├── AgentWidgetState.swift            Shared state model + AgentWidgetStateStore (App Group container)
     └── AgentAccountSnapshotLoader.swift  Loads each provider's snapshot for the widget timeline
@@ -36,7 +36,8 @@ Sources/AgentBarWidgetExtension/
 Tests/AgentBarTests/
 ├── CodexQuotaServiceTests.swift
 ├── GitHubCopilotQuotaServiceTests.swift
-└── GeminiQuotaServiceTests.swift
+├── GeminiQuotaServiceTests.swift
+└── QuotaHistoryStoreTests.swift
 ```
 
 ---
@@ -153,6 +154,18 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 - Claude: `~/.config/claude-code/auth.json` (read-only local Claude Code auth detection)
 - Z.ai: `~/Library/Application Support/AgentBar/ZAIAccounts`
 - Junie: `~/Library/Application Support/AgentBar/JunieAccounts`
+
+Quota history is stored separately at `~/Library/Application Support/AgentBar/quota-history.sqlite3` using SQLite WAL mode. The database contains normalized account/window metadata and quota samples, never credentials or complete API responses.
+
+History rules:
+
+- Record the first successful snapshot for every `provider + account + metric.id`.
+- Record meaningful changes immediately: at least 0.1 percentage point, changed labels, changed reset time, or Unlimited state changes.
+- Record an unchanged heartbeat after 15 minutes since the last sample.
+- Mark a balance increase as `Reset` when the previous reset time passed or the reset schedule advanced; use `Likely reset` for an increase of at least 1 percentage point without explicit reset evidence.
+- Keep disappeared dynamic metrics and removed accounts until the user clears their history.
+- History errors are additive and must never replace or fail the live provider snapshot.
+- Keep history macOS-only for v1; do not add it to the widget state or Windows project without a dedicated parity change.
 
 AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, Gemini, Z.ai, or Junie by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
 
@@ -276,6 +289,9 @@ Test targets:
 | `decodesGeminiQuotaPayload` | Happy-path JSON → `AgentQuotaSnapshot` for Gemini with per-model metrics |
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
+| `quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat` | Sampling threshold, deduplication, and label carry-forward |
+| `quotaHistoryDistinguishesConfirmedLikelyAndScheduleEvents` | Reset and schedule event classification |
+| `quotaHistoryHandlesUnlimitedAndDeletesByCutoff` | Unlimited state and explicit retention cleanup |
 
 ---
 

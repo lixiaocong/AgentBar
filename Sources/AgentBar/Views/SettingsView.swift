@@ -7,15 +7,30 @@ import AgentBarCore
 
 struct SettingsView: View {
     let model: AppModel
+    let historyManager: QuotaHistoryManager
+    let openHistoryAction: () -> Void
     private let providerColumns = [
         GridItem(.adaptive(minimum: 260), alignment: .top)
     ]
     @State private var addAccountProvider: AgentProviderKind?
     @State private var isAddingJunieToken = false
     @State private var isAddingZAICredential = false
+    @State private var isClearingHistory = false
+    @State private var isConfirmingHistoryRebuild = false
+
+    init(
+        model: AppModel,
+        historyManager: QuotaHistoryManager = .shared,
+        openHistoryAction: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        self.historyManager = historyManager
+        self.openHistoryAction = openHistoryAction
+    }
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var historyManager = historyManager
 
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -52,6 +67,54 @@ struct SettingsView: View {
                     .padding(4)
                 }
 
+                GroupBox("History") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Record quota history", isOn: $historyManager.isEnabled)
+
+                        LabeledContent("Sampling", value: "Every 15 minutes + changes")
+                            .font(.caption)
+
+                        LabeledContent("Samples", value: historyManager.stats.sampleCount.formatted())
+                            .font(.caption)
+
+                        LabeledContent("Oldest sample", value: oldestHistorySampleText)
+                            .font(.caption)
+
+                        LabeledContent("Database size", value: historyDatabaseSizeText)
+                            .font(.caption)
+
+                        if let error = historyManager.lastError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Button("Rebuild History Database...") {
+                                isConfirmingHistoryRebuild = true
+                            }
+                            .disabled(historyManager.isMaintaining)
+                        }
+
+                        HStack(spacing: 10) {
+                            Button("Open History...") {
+                                openHistoryAction()
+                            }
+
+                            Button("Clear History...") {
+                                isClearingHistory = true
+                            }
+                            .disabled(historyManager.stats.sampleCount == 0 || historyManager.isMaintaining)
+
+                            if historyManager.isMaintaining {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+
                 LazyVGrid(columns: providerColumns, alignment: .leading, spacing: 14) {
                     ForEach(AgentProviderKind.allCases) { provider in
                         providerSettingsSection(provider)
@@ -69,6 +132,24 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $isAddingZAICredential) {
             AddZAICodingPlanCredentialSheet(model: model)
+        }
+        .sheet(isPresented: $isClearingHistory) {
+            QuotaHistoryCleanupSheet(manager: historyManager)
+        }
+        .confirmationDialog(
+            "Rebuild History Database?",
+            isPresented: $isConfirmingHistoryRebuild
+        ) {
+            Button("Rebuild Database", role: .destructive) {
+                Task { await historyManager.rebuildDatabase() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes all quota history and creates a new database.")
+        }
+        .onAppear {
+            historyManager.start()
+            historyManager.refreshStats()
         }
     }
 
@@ -234,6 +315,137 @@ struct SettingsView: View {
         return hasConfiguredAccounts ? "Add Another Account…" : "Sign In with Browser…"
     }
 
+    private var oldestHistorySampleText: String {
+        guard let oldest = historyManager.stats.oldestSampleAt else { return "None" }
+        return oldest.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var historyDatabaseSizeText: String {
+        ByteCountFormatter.string(
+            fromByteCount: historyManager.stats.databaseSizeBytes,
+            countStyle: .file
+        )
+    }
+
+}
+
+private struct QuotaHistoryCleanupSheet: View {
+    let manager: QuotaHistoryManager
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var daysText = "90"
+    @State private var isConfirmingOlderDeletion = false
+    @State private var isConfirmingAllDeletion = false
+    @State private var errorMessage: String?
+
+    private var days: Int? {
+        guard let value = Int(daysText), value > 0 else { return nil }
+        return value
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Clear Quota History")
+                .font(.title3.weight(.semibold))
+
+            Text("History is kept permanently until you remove it here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                Text("Delete samples older than")
+
+                TextField("Days", text: $daysText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 72)
+
+                Text("days")
+
+                Spacer()
+
+                Button("Delete...", role: .destructive) {
+                    isConfirmingOlderDeletion = true
+                }
+                .disabled(days == nil || manager.isMaintaining)
+            }
+
+            Divider()
+
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Delete all history")
+                        .fontWeight(.semibold)
+                    Text("This cannot be undone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Delete All...", role: .destructive) {
+                    isConfirmingAllDeletion = true
+                }
+                .disabled(manager.isMaintaining)
+            }
+
+            if manager.isMaintaining {
+                ProgressView("Compacting database...")
+                    .controlSize(.small)
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(manager.isMaintaining)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .confirmationDialog(
+            "Delete Old Quota History?",
+            isPresented: $isConfirmingOlderDeletion
+        ) {
+            Button("Delete", role: .destructive) {
+                guard let days else { return }
+                perform { await manager.clearHistory(olderThanDays: days) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Samples older than \(days ?? 0) days will be permanently deleted.")
+        }
+        .confirmationDialog(
+            "Delete All Quota History?",
+            isPresented: $isConfirmingAllDeletion
+        ) {
+            Button("Delete All", role: .destructive) {
+                perform { await manager.clearAllHistory() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every recorded account and quota window will be permanently deleted.")
+        }
+    }
+
+    private func perform(_ operation: @escaping @MainActor () async -> Bool) {
+        errorMessage = nil
+        Task {
+            if await operation() {
+                dismiss()
+            } else {
+                errorMessage = manager.lastError ?? "History could not be cleared."
+            }
+        }
+    }
 }
 
 private struct AddAccountSheet: View {
