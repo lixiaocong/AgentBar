@@ -249,8 +249,8 @@ private struct QuotaHistoryChartCard: View {
         samples.filter { !$0.isUnlimited && $0.remainingPercent != nil }
     }
 
-    private var resetSamples: [QuotaHistorySample] {
-        numericSamples.filter { $0.eventKind.isResetMarker }
+    private var detectedResetDates: [Date] {
+        QuotaHistoryResetDetector.resetDates(in: numericSamples)
     }
 
     private var segments: [QuotaHistoryChartSegment] {
@@ -378,15 +378,15 @@ private struct QuotaHistoryChartCard: View {
                 }
             }
 
-            ForEach(resetSamples) { sample in
-                if let remaining = sample.remainingPercent {
-                    PointMark(
-                        x: .value("Reset time", sample.sampledAt),
-                        y: .value("Reset remaining", remaining)
-                    )
-                    .foregroundStyle(sample.eventKind == .reset ? Color.green : Color.orange)
-                    .symbolSize(42)
-                }
+            ForEach(detectedResetDates, id: \.self) { date in
+                RuleMark(x: .value("Reset", date))
+                    .foregroundStyle(.green.opacity(0.6))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .annotation(position: .top, spacing: 2) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
             }
 
             if numericSamples.count == 1,
@@ -548,8 +548,6 @@ private extension Double {
 private extension QuotaHistoryEventKind {
     var historySymbolName: String {
         switch self {
-        case .reset: return "arrow.clockwise"
-        case .likelyReset: return "questionmark.circle"
         case .scheduleChanged: return "calendar.badge.clock"
         case .initial, .interval, .changed: return "circle"
         }
@@ -557,8 +555,6 @@ private extension QuotaHistoryEventKind {
 
     var historyTint: Color {
         switch self {
-        case .reset: return .green
-        case .likelyReset: return .orange
         case .scheduleChanged: return .blue
         case .initial, .interval, .changed: return .secondary
         }

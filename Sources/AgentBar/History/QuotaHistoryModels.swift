@@ -9,25 +9,15 @@ enum QuotaHistoryEventKind: Int, Codable, CaseIterable, Sendable {
     case initial = 0
     case interval = 1
     case changed = 2
-    case reset = 3
-    case likelyReset = 4
     case scheduleChanged = 5
 
     var title: String? {
         switch self {
-        case .reset:
-            return "Reset"
-        case .likelyReset:
-            return "Likely reset"
         case .scheduleChanged:
             return "Reset schedule changed"
         case .initial, .interval, .changed:
             return nil
         }
-    }
-
-    var isResetMarker: Bool {
-        self == .reset || self == .likelyReset
     }
 }
 
@@ -184,7 +174,6 @@ enum QuotaHistoryDownsampler {
             if let maximum = bucket.max(by: { ($0.remainingPercent ?? -1) < ($1.remainingPercent ?? -1) }) {
                 candidates.append(maximum)
             }
-            candidates.append(contentsOf: bucket.filter { $0.eventKind.isResetMarker })
             selected.append(contentsOf: candidates)
         }
 
@@ -192,5 +181,38 @@ enum QuotaHistoryDownsampler {
         return selected
             .sorted { $0.sampledAt < $1.sampledAt }
             .filter { seen.insert($0.id).inserted }
+    }
+}
+
+/// Detects quota resets at display time by finding samples where the remaining
+/// balance jumps back up near full (`>= thresholdPercent`) after sitting below
+/// the threshold. A single reset is emitted at the transition point, so a
+/// sustained near-full plateau does not produce repeated markers.
+enum QuotaHistoryResetDetector {
+    /// A remaining percentage at or above this value counts as "near full".
+    static let thresholdPercent: Double = 95
+
+    static func resetDates(in samples: [QuotaHistorySample]) -> [Date] {
+        let numeric = samples
+            .filter { !$0.isUnlimited }
+            .compactMap { sample -> (date: Date, remaining: Double)? in
+                guard let remaining = sample.remainingPercent else { return nil }
+                return (sample.sampledAt, remaining)
+            }
+            .sorted { $0.date < $1.date }
+
+        var dates: [Date] = []
+        var wasBelowThreshold = false
+        for entry in numeric {
+            if entry.remaining >= thresholdPercent {
+                if wasBelowThreshold {
+                    dates.append(entry.date)
+                }
+                wasBelowThreshold = false
+            } else {
+                wasBelowThreshold = true
+            }
+        }
+        return dates
     }
 }

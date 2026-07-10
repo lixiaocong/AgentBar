@@ -17,7 +17,6 @@ struct QuotaHistoryStoreError: LocalizedError {
 actor QuotaHistoryStore: QuotaHistoryQuerying {
     static let samplingInterval: TimeInterval = 15 * 60
     static let immediateChangeBasisPoints = 10
-    static let likelyResetBasisPoints = 100
     private static let resetScheduleToleranceMilliseconds: Int64 = 60 * 1_000
 
     let databaseURL: URL
@@ -552,14 +551,10 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
             }
 
             eventKind = Self.eventKind(
-                previous: previous,
-                usedBasisPoints: usedBasisPoints,
-                resetMilliseconds: resetMilliseconds,
-                sampledAtMilliseconds: sampledAtMilliseconds,
+                resetChanged: resetChanged,
                 amountChanged: amountChanged,
                 labelsChanged: labelsChanged,
                 unlimitedChanged: unlimitedChanged,
-                resetChanged: resetChanged,
                 intervalElapsed: intervalElapsed
             )
         } else {
@@ -590,41 +585,12 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
     }
 
     private static func eventKind(
-        previous: StoredSampleState,
-        usedBasisPoints: Int?,
-        resetMilliseconds: Int64?,
-        sampledAtMilliseconds: Int64,
+        resetChanged: Bool,
         amountChanged: Bool,
         labelsChanged: Bool,
         unlimitedChanged: Bool,
-        resetChanged: Bool,
         intervalElapsed: Bool
     ) -> QuotaHistoryEventKind {
-        let balanceIncrease: Int = {
-            guard let previousUsed = previous.usedBasisPoints,
-                  let usedBasisPoints else { return 0 }
-            return previousUsed - usedBasisPoints
-        }()
-
-        if balanceIncrease >= immediateChangeBasisPoints {
-            let previousResetPassed = previous.resetsAtMilliseconds.map {
-                $0 <= sampledAtMilliseconds + 5 * 60 * 1_000
-            } ?? false
-            let scheduleAdvanced: Bool = {
-                guard resetChanged,
-                      let oldReset = previous.resetsAtMilliseconds,
-                      let resetMilliseconds else { return false }
-                return resetMilliseconds > oldReset + 60 * 1_000
-            }()
-
-            if previousResetPassed || scheduleAdvanced {
-                return .reset
-            }
-            if balanceIncrease >= likelyResetBasisPoints {
-                return .likelyReset
-            }
-        }
-
         if resetChanged {
             return .scheduleChanged
         }

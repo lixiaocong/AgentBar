@@ -162,7 +162,7 @@ History rules:
 - Record the first successful snapshot for every `provider + account + metric.id`.
 - Record meaningful changes immediately: at least 0.1 percentage point, changed labels, changed reset time, or Unlimited state changes.
 - Record an unchanged heartbeat after 15 minutes since the last sample.
-- Mark a balance increase as `Reset` when the previous reset time passed or the reset schedule advanced; use `Likely reset` for an increase of at least 1 percentage point without explicit reset evidence.
+- Do not classify resets at write time. Resets are detected at display time by `QuotaHistoryResetDetector`: a sample whose remaining balance jumps back to `>= 95%` after sitting below the threshold marks one reset, drawn as a dashed vertical line in the chart.
 - Keep disappeared dynamic metrics and removed accounts until the user clears their history.
 - History errors are additive and must never replace or fail the live provider snapshot.
 - Keep history macOS-only for v1; do not add it to the widget state or Windows project without a dedicated parity change.
@@ -290,7 +290,9 @@ Test targets:
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
 | `quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat` | Sampling threshold, deduplication, and label carry-forward |
-| `quotaHistoryDistinguishesConfirmedLikelyAndScheduleEvents` | Reset and schedule event classification |
+| `quotaHistoryRecordsBalanceJumpsAsChangedAndScheduleEvents` | Balance jumps stored as plain changes; no reset classification at write time |
+| `quotaHistoryResetDetectorMarksJumpsAboveThreshold` | Display-time reset detection: remaining jumping to `>= 95%` marks a reset |
+| `quotaHistoryDownsamplingPreservesEndpointsAndExtremes` | Downsampling keeps first/last/extreme points within bucket count |
 | `quotaHistoryHandlesUnlimitedAndDeletesByCutoff` | Unlimited state and explicit retention cleanup |
 
 ---

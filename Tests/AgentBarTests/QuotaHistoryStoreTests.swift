@@ -73,15 +73,15 @@ func quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat() async throws {
 }
 
 @Test
-func quotaHistoryDistinguishesConfirmedLikelyAndScheduleEvents() async throws {
+func quotaHistoryRecordsBalanceJumpsAsChangedAndScheduleEvents() async throws {
     let fixture = try HistoryStoreFixture(name: #function)
     defer { fixture.cleanup() }
     let account = fixture.account(provider: .gemini, name: "events")
     let start = Date(timeIntervalSince1970: 1_800_100_000)
 
     let initialMetrics = [
-        historyMetric(id: "confirmed", usedPercent: 50, resetsAt: start.addingTimeInterval(5 * 60)),
-        historyMetric(id: "likely", usedPercent: 50, resetsAt: nil),
+        // No reset time, so a balance jump can't also trigger schedule change.
+        historyMetric(id: "balance-jump", usedPercent: 50, resetsAt: nil),
         historyMetric(id: "schedule", usedPercent: 50, resetsAt: start.addingTimeInterval(60 * 60)),
     ]
     _ = try await fixture.store.record(
@@ -92,8 +92,10 @@ func quotaHistoryDistinguishesConfirmedLikelyAndScheduleEvents() async throws {
 
     let next = start.addingTimeInterval(6 * 60)
     let updatedMetrics = [
-        historyMetric(id: "confirmed", usedPercent: 0, resetsAt: next.addingTimeInterval(5 * 60 * 60)),
-        historyMetric(id: "likely", usedPercent: 40, resetsAt: nil),
+        // Balance jumped from 50% used to 0% used (a reset), but the store no
+        // longer classifies this — it is recorded as a plain change. Reset
+        // detection happens at display time via QuotaHistoryResetDetector.
+        historyMetric(id: "balance-jump", usedPercent: 0, resetsAt: nil),
         historyMetric(id: "schedule", usedPercent: 50, resetsAt: next.addingTimeInterval(2 * 60 * 60)),
     ]
     _ = try await fixture.store.record(
@@ -105,8 +107,9 @@ func quotaHistoryDistinguishesConfirmedLikelyAndScheduleEvents() async throws {
     let historyAccount = try #require(await fixture.store.accounts().first)
     let windows = try await fixture.store.windows(for: historyAccount.accountKey)
     let events = Dictionary(uniqueKeysWithValues: windows.map { ($0.metricKey, $0.latestSample?.eventKind) })
-    #expect(events["confirmed"] == .reset)
-    #expect(events["likely"] == .likelyReset)
+    // Balance jumps are stored as `.changed`; reset/likelyReset no longer exist.
+    // The reset is detected later by QuotaHistoryResetDetector at display time.
+    #expect(events["balance-jump"] == .changed)
     #expect(events["schedule"] == .scheduleChanged)
 }
 
@@ -263,7 +266,7 @@ func quotaHistoryHandlesUnlimitedAndDeletesByCutoff() async throws {
 }
 
 @Test
-func quotaHistoryDownsamplingPreservesResetMarkers() {
+func quotaHistoryDownsamplingPreservesEndpointsAndExtremes() {
     let start = Date(timeIntervalSince1970: 1_800_300_000)
     let samples = (0 ..< 2_000).map { index in
         QuotaHistorySample(
@@ -274,16 +277,57 @@ func quotaHistoryDownsamplingPreservesResetMarkers() {
             remainingLabel: nil,
             resetsAt: nil,
             isUnlimited: false,
-            eventKind: index == 1_111 ? .reset : .interval
+            eventKind: .interval
         )
     }
 
     let result = QuotaHistoryDownsampler.downsample(samples)
     #expect(result.count < samples.count)
     #expect(result.count <= 400)
-    #expect(result.contains { $0.eventKind == .reset && $0.sampledAt == samples[1_111].sampledAt })
     #expect(result.first?.sampledAt == samples.first?.sampledAt)
     #expect(result.last?.sampledAt == samples.last?.sampledAt)
+}
+
+@Test
+func quotaHistoryResetDetectorMarksJumpsAboveThreshold() {
+    let start = Date(timeIntervalSince1970: 1_800_300_000)
+    // remaining% sequence: 20 -> 22 -> 18 -> 98 -> 50 -> 97 -> 96
+    let percents: [Double] = [20, 22, 18, 98, 50, 97, 96]
+    let samples = percents.enumerated().map { index, remaining in
+        QuotaHistorySample(
+            windowID: 1,
+            sampledAt: start.addingTimeInterval(Double(index * 60)),
+            usedBasisPoints: Int((100 - remaining) * 100),
+            usedLabel: nil,
+            remainingLabel: nil,
+            resetsAt: nil,
+            isUnlimited: false,
+            eventKind: .interval
+        )
+    }
+
+    let resets = QuotaHistoryResetDetector.resetDates(in: samples)
+    // Two transitions: 18->98 (reset) and 50->97 (reset). The 97->96 step is a
+    // sustained near-full plateau, not a fresh reset, so no third marker.
+    #expect(resets.count == 2)
+    #expect(resets == [samples[3].sampledAt, samples[5].sampledAt])
+}
+
+@Test
+func quotaHistoryResetDetectorIgnoresUnlimitedSamples() {
+    let start = Date(timeIntervalSince1970: 1_800_300_000)
+    let samples: [QuotaHistorySample] = [
+        .init(windowID: 1, sampledAt: start, usedBasisPoints: 8000,
+              usedLabel: nil, remainingLabel: nil, resetsAt: nil,
+              isUnlimited: false, eventKind: .interval),
+        // Unlimited samples carry no numeric remaining and must be skipped.
+        .init(windowID: 1, sampledAt: start.addingTimeInterval(60), usedBasisPoints: nil,
+              usedLabel: nil, remainingLabel: nil, resetsAt: nil,
+              isUnlimited: true, eventKind: .changed),
+    ]
+
+    let resets = QuotaHistoryResetDetector.resetDates(in: samples)
+    #expect(resets.isEmpty)
 }
 
 @Test

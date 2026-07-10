@@ -35,7 +35,7 @@ Current providers:
 
 ## Quota History
 
-AgentBar records every successfully returned quota window by provider and account. Open **History...** from the menu-bar popover or Settings to see the remaining balance over time, including confirmed resets and likely resets inferred from balance increases.
+AgentBar records every successfully returned quota window by provider and account. Open **History...** from the menu-bar popover or Settings to see the remaining balance over time. When the remaining balance jumps back to near full (95%+), a dashed vertical line marks the reset — whether automatic or manual.
 
 - Recording is enabled by default.
 - Unchanged balances are sampled every 15 minutes; meaningful balance, label, reset-time, and unlimited-state changes are stored immediately.
