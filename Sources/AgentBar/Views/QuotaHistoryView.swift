@@ -5,67 +5,18 @@ import SwiftUI
 import AgentBarCore
 #endif
 
-struct QuotaHistoryView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let model: AppModel
-    let manager: QuotaHistoryManager
-
-    @State private var viewModel: QuotaHistoryViewModel
-    @State private var isSidebarVisible = true
-
-    init(model: AppModel, manager: QuotaHistoryManager) {
-        self.model = model
-        self.manager = manager
-        _viewModel = State(initialValue: QuotaHistoryViewModel(model: model, manager: manager))
-    }
+struct QuotaHistorySidebarView: View {
+    @Bindable var viewModel: QuotaHistoryViewModel
 
     var body: some View {
-        @Bindable var viewModel = viewModel
-
-        HStack(spacing: 0) {
-            if isSidebarVisible {
-                HStack(spacing: 0) {
-                    accountSidebar(selection: $viewModel.selectedAccountKey)
-                        .frame(width: 240)
-
-                    Divider()
-                }
-                .frame(width: 241)
-                .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-
-            historyDetail(range: $viewModel.range)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .toolbar {
-            ToolbarItem(id: "quota-history-sidebar", placement: .navigation) {
-                Button(action: toggleSidebar) {
-                    Image(systemName: "sidebar.left")
-                }
-                .help(isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-                .accessibilityLabel(isSidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-                .keyboardShortcut("s", modifiers: [.control, .command])
-            }
-        }
-        .frame(minWidth: 760, minHeight: 520)
-        .task {
-            manager.start()
-            await viewModel.load()
-        }
+        accountSidebar
         .onChange(of: viewModel.selectedAccountKey) {
             Task { await viewModel.loadSelection() }
         }
-        .onChange(of: viewModel.range) {
-            Task { await viewModel.loadRange() }
-        }
-        .onChange(of: manager.revision) {
-            Task { await viewModel.load() }
-        }
     }
 
-    private func accountSidebar(selection: Binding<String?>) -> some View {
-        List(selection: selection) {
+    private var accountSidebar: some View {
+        List(selection: $viewModel.selectedAccountKey) {
             ForEach(AgentProviderKind.allCases) { provider in
                 let providerAccounts = viewModel.accounts.filter { $0.provider == provider }
                 if !providerAccounts.isEmpty {
@@ -91,32 +42,53 @@ struct QuotaHistoryView: View {
     }
 
     private func accountRow(_ account: QuotaHistoryAccount) -> some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 8) {
             Image(account.provider.historyAssetName)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 20, height: 20)
+                .frame(width: 16, height: 16)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(account.displayLabel)
-                    .font(.body.weight(.semibold))
-                    .lineLimit(1)
+            Text(account.displayLabel)
+                .font(.body)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
-                Text(viewModel.isConfigured(account) ? account.provider.title : "Removed account")
-                    .font(.caption)
+            if !viewModel.isConfigured(account) {
+                Image(systemName: "minus.circle")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .accessibilityLabel("Removed account")
             }
         }
-        .padding(.vertical, 2)
+    }
+}
+
+struct QuotaHistoryDetailView: View {
+    let manager: QuotaHistoryManager
+
+    @Bindable var viewModel: QuotaHistoryViewModel
+
+    var body: some View {
+        historyDetail
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task {
+                manager.start()
+                await viewModel.load()
+            }
+            .onChange(of: viewModel.range) {
+                Task { await viewModel.loadRange() }
+            }
+            .onChange(of: manager.revision) {
+                Task { await viewModel.load() }
+            }
     }
 
     @ViewBuilder
-    private func historyDetail(range: Binding<QuotaHistoryRange>) -> some View {
+    private var historyDetail: some View {
         if let account = viewModel.selectedAccount {
             VStack(alignment: .leading, spacing: 0) {
-                detailHeader(account: account, range: range)
+                detailHeader(account: account)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 14)
 
@@ -172,10 +144,7 @@ struct QuotaHistoryView: View {
         }
     }
 
-    private func detailHeader(
-        account: QuotaHistoryAccount,
-        range: Binding<QuotaHistoryRange>
-    ) -> some View {
+    private func detailHeader(account: QuotaHistoryAccount) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 Image(account.provider.historyAssetName)
@@ -218,7 +187,7 @@ struct QuotaHistoryView: View {
             HStack {
                 Spacer(minLength: 0)
 
-                Picker("Range", selection: range) {
+                Picker("Range", selection: $viewModel.range) {
                     ForEach(QuotaHistoryRange.allCases) { range in
                         Text(range.title).tag(range)
                     }
@@ -227,12 +196,6 @@ struct QuotaHistoryView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 360)
             }
-        }
-    }
-
-    private func toggleSidebar() {
-        withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) {
-            isSidebarVisible.toggle()
         }
     }
 }
@@ -249,8 +212,8 @@ private struct QuotaHistoryChartCard: View {
         samples.filter { !$0.isUnlimited && $0.remainingPercent != nil }
     }
 
-    private var detectedResetDates: [Date] {
-        QuotaHistoryResetDetector.resetDates(in: numericSamples)
+    private var resetSamples: [QuotaHistorySample] {
+        numericSamples.filter { $0.eventKind == .reset }
     }
 
     private var segments: [QuotaHistoryChartSegment] {
@@ -378,8 +341,8 @@ private struct QuotaHistoryChartCard: View {
                 }
             }
 
-            ForEach(detectedResetDates, id: \.self) { date in
-                RuleMark(x: .value("Reset", date))
+            ForEach(resetSamples) { sample in
+                RuleMark(x: .value("Reset", sample.sampledAt))
                     .foregroundStyle(.green.opacity(0.6))
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                     .annotation(position: .top, spacing: 2) {
@@ -466,11 +429,6 @@ private struct QuotaHistoryChartCard: View {
                 Text(sample.sampledAt.formatted(date: .abbreviated, time: .shortened))
                     .foregroundStyle(.secondary)
 
-                if let eventTitle = sample.eventKind.title {
-                    Label(eventTitle, systemImage: sample.eventKind.historySymbolName)
-                        .foregroundStyle(sample.eventKind.historyTint)
-                }
-
                 Spacer(minLength: 8)
 
                 if let remainingLabel = sample.remainingLabel {
@@ -542,21 +500,5 @@ private extension Double {
     var historyColor: Color {
         let rgb = AgentQuotaDisplayColor.color(for: self)
         return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
-    }
-}
-
-private extension QuotaHistoryEventKind {
-    var historySymbolName: String {
-        switch self {
-        case .scheduleChanged: return "calendar.badge.clock"
-        case .initial, .interval, .changed: return "circle"
-        }
-    }
-
-    var historyTint: Color {
-        switch self {
-        case .scheduleChanged: return .blue
-        case .initial, .interval, .changed: return .secondary
-        }
     }
 }

@@ -9,16 +9,8 @@ enum QuotaHistoryEventKind: Int, Codable, CaseIterable, Sendable {
     case initial = 0
     case interval = 1
     case changed = 2
-    case scheduleChanged = 5
-
-    var title: String? {
-        switch self {
-        case .scheduleChanged:
-            return "Reset schedule changed"
-        case .initial, .interval, .changed:
-            return nil
-        }
-    }
+    // Keep raw value 5 so existing schedule-change samples decode as resets.
+    case reset = 5
 }
 
 enum QuotaHistoryRange: String, CaseIterable, Identifiable, Sendable {
@@ -105,6 +97,72 @@ struct QuotaHistorySample: Identifiable, Equatable, Sendable {
     var remainingPercent: Double? {
         usedPercent.map { max(0, 100 - $0) }
     }
+
+    func replacingEventKind(_ eventKind: QuotaHistoryEventKind) -> QuotaHistorySample {
+        QuotaHistorySample(
+            windowID: windowID,
+            sampledAt: sampledAt,
+            usedBasisPoints: usedBasisPoints,
+            usedLabel: usedLabel,
+            remainingLabel: remainingLabel,
+            resetsAt: resetsAt,
+            isUnlimited: isUnlimited,
+            eventKind: eventKind
+        )
+    }
+}
+
+enum QuotaHistoryResetSchedule {
+    static let toleranceMilliseconds: Int64 = 60 * 1_000
+
+    static func changed(
+        previousSampledAtMilliseconds: Int64,
+        previousResetMilliseconds: Int64?,
+        sampledAtMilliseconds: Int64,
+        resetMilliseconds: Int64?
+    ) -> Bool {
+        switch (previousResetMilliseconds, resetMilliseconds) {
+        case (nil, nil):
+            return false
+        case (_?, nil), (nil, _?):
+            return true
+        case let (oldReset?, newReset?):
+            let resetAdvance = newReset - oldReset
+            guard abs(resetAdvance) >= toleranceMilliseconds else {
+                return false
+            }
+
+            let sampleAdvance = sampledAtMilliseconds - previousSampledAtMilliseconds
+            return abs(resetAdvance - sampleAdvance) >= toleranceMilliseconds
+        }
+    }
+
+    /// Reclassifies legacy rolling countdown events using the same schedule
+    /// semantics applied when new samples are written.
+    static func normalizeEvents(in samples: [QuotaHistorySample]) -> [QuotaHistorySample] {
+        let sorted = samples.sorted { $0.sampledAt < $1.sampledAt }
+        var previous: QuotaHistorySample?
+
+        return sorted.map { sample in
+            defer { previous = sample }
+            guard sample.eventKind == .reset,
+                  let previous else {
+                return sample.eventKind == .reset ? sample.replacingEventKind(.changed) : sample
+            }
+
+            let isReset = changed(
+                previousSampledAtMilliseconds: milliseconds(previous.sampledAt),
+                previousResetMilliseconds: previous.resetsAt.map(milliseconds),
+                sampledAtMilliseconds: milliseconds(sample.sampledAt),
+                resetMilliseconds: sample.resetsAt.map(milliseconds)
+            )
+            return isReset ? sample : sample.replacingEventKind(.changed)
+        }
+    }
+
+    private static func milliseconds(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1_000).rounded())
+    }
 }
 
 struct QuotaHistoryStats: Equatable, Sendable {
@@ -174,6 +232,7 @@ enum QuotaHistoryDownsampler {
             if let maximum = bucket.max(by: { ($0.remainingPercent ?? -1) < ($1.remainingPercent ?? -1) }) {
                 candidates.append(maximum)
             }
+            candidates.append(contentsOf: bucket.filter { $0.eventKind == .reset })
             selected.append(contentsOf: candidates)
         }
 
@@ -181,38 +240,5 @@ enum QuotaHistoryDownsampler {
         return selected
             .sorted { $0.sampledAt < $1.sampledAt }
             .filter { seen.insert($0.id).inserted }
-    }
-}
-
-/// Detects quota resets at display time by finding samples where the remaining
-/// balance jumps back up near full (`>= thresholdPercent`) after sitting below
-/// the threshold. A single reset is emitted at the transition point, so a
-/// sustained near-full plateau does not produce repeated markers.
-enum QuotaHistoryResetDetector {
-    /// A remaining percentage at or above this value counts as "near full".
-    static let thresholdPercent: Double = 95
-
-    static func resetDates(in samples: [QuotaHistorySample]) -> [Date] {
-        let numeric = samples
-            .filter { !$0.isUnlimited }
-            .compactMap { sample -> (date: Date, remaining: Double)? in
-                guard let remaining = sample.remainingPercent else { return nil }
-                return (sample.sampledAt, remaining)
-            }
-            .sorted { $0.date < $1.date }
-
-        var dates: [Date] = []
-        var wasBelowThreshold = false
-        for entry in numeric {
-            if entry.remaining >= thresholdPercent {
-                if wasBelowThreshold {
-                    dates.append(entry.date)
-                }
-                wasBelowThreshold = false
-            } else {
-                wasBelowThreshold = true
-            }
-        }
-        return dates
     }
 }

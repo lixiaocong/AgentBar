@@ -17,7 +17,6 @@ struct QuotaHistoryStoreError: LocalizedError {
 actor QuotaHistoryStore: QuotaHistoryQuerying {
     static let samplingInterval: TimeInterval = 15 * 60
     static let immediateChangeBasisPoints = 10
-    private static let resetScheduleToleranceMilliseconds: Int64 = 60 * 1_000
 
     let databaseURL: URL
 
@@ -537,10 +536,11 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
             let amountChanged = Self.amountChanged(previous.usedBasisPoints, usedBasisPoints)
             labelsChanged = previous.usedLabel != metric.usedLabel ||
                 previous.remainingLabel != metric.remainingLabel
-            let resetChanged = Self.resetScheduleChanged(
-                previous: previous,
+            let resetChanged = QuotaHistoryResetSchedule.changed(
+                previousSampledAtMilliseconds: previous.sampledAtMilliseconds,
+                previousResetMilliseconds: previous.resetsAtMilliseconds,
+                sampledAtMilliseconds: sampledAtMilliseconds,
                 resetMilliseconds: resetMilliseconds,
-                sampledAtMilliseconds: sampledAtMilliseconds
             )
             let unlimitedChanged = previous.isUnlimited != unlimited
             let intervalElapsed = sampledAtMilliseconds - previous.sampledAtMilliseconds >=
@@ -592,7 +592,7 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
         intervalElapsed: Bool
     ) -> QuotaHistoryEventKind {
         if resetChanged {
-            return .scheduleChanged
+            return .reset
         }
         if amountChanged || labelsChanged || unlimitedChanged {
             return .changed
@@ -913,27 +913,6 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
             return false
         case (_?, nil), (nil, _?):
             return true
-        }
-    }
-
-    private static func resetScheduleChanged(
-        previous: StoredSampleState,
-        resetMilliseconds: Int64?,
-        sampledAtMilliseconds: Int64
-    ) -> Bool {
-        switch (previous.resetsAtMilliseconds, resetMilliseconds) {
-        case (nil, nil):
-            return false
-        case (_?, nil), (nil, _?):
-            return true
-        case let (oldReset?, newReset?):
-            let resetAdvance = newReset - oldReset
-            guard abs(resetAdvance) >= resetScheduleToleranceMilliseconds else {
-                return false
-            }
-
-            let sampleAdvance = sampledAtMilliseconds - previous.sampledAtMilliseconds
-            return abs(resetAdvance - sampleAdvance) >= resetScheduleToleranceMilliseconds
         }
     }
 

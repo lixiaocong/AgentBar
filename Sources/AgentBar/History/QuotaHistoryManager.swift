@@ -80,7 +80,8 @@ final class QuotaHistoryManager: QuotaHistoryRecording {
             for: windowID,
             startingAt: range.startDate(relativeTo: now)
         )
-        return QuotaHistoryDownsampler.downsample(samples)
+        let normalizedSamples = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+        return QuotaHistoryDownsampler.downsample(normalizedSamples)
     }
 
     func refreshStats() {

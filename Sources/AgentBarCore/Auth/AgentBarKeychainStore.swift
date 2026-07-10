@@ -2,11 +2,31 @@ import Foundation
 import Security
 
 enum AgentBarKeychainStore {
-    static let sharedService = "AgentBar Auth"
+    static let productionService = "AgentBar Auth v3"
+    static let developmentService = "AgentBar Auth Debug v2"
+    static let previousProductionService = "AgentBar Auth v2"
+    static let legacyService = "AgentBar Auth"
+    static let productionBundleIdentifier = "com.agentbar.menu"
     private static let sharedAccount = "browser-login-sessions"
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var testVault = Vault()
+
+    static var sharedService: String {
+        serviceName(for: Bundle.main.bundleIdentifier)
+    }
+
+    static func serviceName(for bundleIdentifier: String?) -> String {
+        bundleIdentifier == productionBundleIdentifier ? productionService : developmentService
+    }
+
+    static func migrationServices(for bundleIdentifier: String?) -> [String] {
+        guard bundleIdentifier == productionBundleIdentifier else {
+            return []
+        }
+
+        return [previousProductionService, legacyService]
+    }
 
     static func read(
         logicalService: String,
@@ -92,9 +112,26 @@ enum AgentBarKeychainStore {
     }
 
     private static func readVault() throws -> Vault {
+        if let vault = try readVault(service: sharedService) {
+            return vault
+        }
+
+        for service in migrationServices(for: Bundle.main.bundleIdentifier) {
+            guard let previousVault = try readVault(service: service) else {
+                continue
+            }
+
+            try writeVault(previousVault, service: sharedService)
+            return previousVault
+        }
+
+        return Vault()
+    }
+
+    private static func readVault(service: String) throws -> Vault? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: sharedService,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: sharedAccount,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
@@ -110,17 +147,21 @@ enum AgentBarKeychainStore {
             }
             return try JSONDecoder().decode(Vault.self, from: data)
         case errSecItemNotFound:
-            return Vault()
+            return nil
         default:
             throw AgentBarKeychainStoreError.keychainStatus(status)
         }
     }
 
     private static func writeVault(_ vault: Vault) throws {
+        try writeVault(vault, service: sharedService)
+    }
+
+    private static func writeVault(_ vault: Vault, service: String) throws {
         let data = try JSONEncoder().encode(vault)
         let baseQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: sharedService,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: sharedAccount
         ]
 

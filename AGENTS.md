@@ -155,6 +155,8 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 - Z.ai: `~/Library/Application Support/AgentBar/ZAIAccounts`
 - Junie: `~/Library/Application Support/AgentBar/JunieAccounts`
 
+The installed `com.agentbar.menu` app uses the `AgentBar Auth v3` Keychain service. Ad-hoc `swift run` builds use `AgentBar Auth Debug v2`; never make them share a service because an unsigned debug build's designated requirement is cdhash-based and changes after rebuilding. The installed app migrates `AgentBar Auth v2` and then the legacy `AgentBar Auth` vault, leaving old items intact after migration. `scripts/install-app.sh` must prefer an Apple Development identity with a stable Team ID so Keychain authorization survives local rebuilds.
+
 Quota history is stored separately at `~/Library/Application Support/AgentBar/quota-history.sqlite3` using SQLite WAL mode. The database contains normalized account/window metadata and quota samples, never credentials or complete API responses.
 
 History rules:
@@ -162,10 +164,28 @@ History rules:
 - Record the first successful snapshot for every `provider + account + metric.id`.
 - Record meaningful changes immediately: at least 0.1 percentage point, changed labels, changed reset time, or Unlimited state changes.
 - Record an unchanged heartbeat after 15 minutes since the last sample.
-- Do not classify resets at write time. Resets are detected at display time by `QuotaHistoryResetDetector`: a sample whose remaining balance jumps back to `>= 95%` after sitting below the threshold marks one reset, drawn as a dashed vertical line in the chart.
+- Treat a meaningful reset schedule change as the reset event. Balance changes alone do not infer resets; recorded reset events are drawn as dashed vertical lines in the chart.
 - Keep disappeared dynamic metrics and removed accounts until the user clears their history.
 - History errors are additive and must never replace or fail the live provider snapshot.
 - Keep history macOS-only for v1; do not add it to the widget state or Windows project without a dedicated parity change.
+
+### History window sidebar architecture
+
+The History window is an AppKit-managed singleton auxiliary window, so its sidebar must also use the native AppKit controller hierarchy. Keep `AgentBarHistoryWindowController` configured as follows:
+
+- The window's `contentViewController` is an `NSSplitViewController` with one `NSSplitViewItem(sidebarWithViewController:)` and one non-collapsible detail item.
+- SwiftUI remains responsible only for the sidebar and detail content through separate `NSHostingController` instances. Keep both hosting controllers' `sizingOptions` empty so intrinsic SwiftUI widths cannot override the split view during an animation.
+- Keep the sidebar's `collapseBehavior` set to `.preferResizingSiblingsWithFixedSplitView`; the window remains fixed while the detail pane resizes continuously.
+- Keep the split view autosave name so the user's divider position and collapsed state are restored by AppKit.
+- The toolbar button uses the custom `AgentBarHistoryToggleSidebar` item identifier, the `sidebar.left` system symbol, and the native `NSSplitViewController.toggleSidebar(_:)` action. It must remain the first toolbar item and stay at the leading edge in both expanded and collapsed states.
+
+Do not replace this with a hand-animated `HStack`, width state, or offset animation. Earlier custom implementations animated only the declared sidebar width while SwiftUI resolved the detail pane's minimum/intrinsic width at the end, producing a smooth first half followed by a jump.
+
+Do not put `NavigationSplitView` back inside the manually created History `NSWindow`. In this hosting arrangement, its reveal animation can translate the detail before completing the width reflow, and SwiftUI owns an automatically placed sidebar toggle that moves to the detail's trailing edge after collapse.
+
+Do not use `NSToolbarItem.Identifier.toggleSidebar` for this window. AppKit treats that identifier as a special sidebar-relative item and places it at the sidebar's trailing boundary; when the sidebar is hidden, the button can end up at the far right of the toolbar. The custom identifier fixes placement while retaining the system split-controller action and animation.
+
+When changing this window, verify both directions on the installed Release app: collapse must resize the detail continuously, expand must do the same without a final width jump, and the toolbar button must keep the same leading position in both states.
 
 AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, Gemini, Z.ai, or Junie by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
 
@@ -244,6 +264,8 @@ The app runs as a menu-bar-only accessory (`LSUIElement = true`) — no Dock ico
 swift run AgentBar
 ```
 
+This development executable uses a separate debug Keychain vault. Use `./scripts/install-app.sh` to test existing installed-app accounts and widget behavior.
+
 Errors and key events print directly to the terminal. Example output:
 
 ```
@@ -290,10 +312,11 @@ Test targets:
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
 | `quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat` | Sampling threshold, deduplication, and label carry-forward |
-| `quotaHistoryRecordsBalanceJumpsAsChangedAndScheduleEvents` | Balance jumps stored as plain changes; no reset classification at write time |
-| `quotaHistoryResetDetectorMarksJumpsAboveThreshold` | Display-time reset detection: remaining jumping to `>= 95%` marks a reset |
-| `quotaHistoryDownsamplingPreservesEndpointsAndExtremes` | Downsampling keeps first/last/extreme points within bucket count |
+| `quotaHistoryUsesScheduleChangesAsResetEvents` | Balance jumps stay plain changes; meaningful reset schedule changes become resets |
+| `quotaHistoryNormalizesLegacyRollingScheduleEvents` | Legacy rolling countdown changes are filtered while real schedule advances remain resets |
+| `quotaHistoryDownsamplingPreservesEndpointsAndExtremes` | Downsampling keeps first/last/extreme points and reset events within bucket count |
 | `quotaHistoryHandlesUnlimitedAndDeletesByCutoff` | Unlimited state and explicit retention cleanup |
+| `historyWindowUsesNativeSidebarSplitView` | Native split items, fixed-window collapse behavior, and toolbar configuration |
 
 ---
 

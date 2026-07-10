@@ -6,6 +6,8 @@ Minimal macOS menu bar app for tracking local coding-agent usage and account sta
 
 AgentBar uses app-owned sign-in for browser/API-token providers, stores tokens in its own macOS Keychain vault, and displays signed-in accounts side by side in the menu bar popover.
 
+The installed app and `swift run` development builds use separate Keychain vaults. This prevents ad-hoc debug signatures from taking ownership of production credentials and triggering repeated macOS access prompts. Existing installations migrate the legacy vault once on first launch; macOS may request one final authorization for that migration.
+
 ## Desktop Widget
 
 AgentBar now bundles a native macOS desktop widget. After installing `build/AgentBar.app`, add it from the widget gallery and place it on the desktop to see one selected Codex, GitHub Copilot, Gemini, Claude, or Junie account without opening the menu bar popover.
@@ -35,7 +37,7 @@ Current providers:
 
 ## Quota History
 
-AgentBar records every successfully returned quota window by provider and account. Open **History...** from the menu-bar popover or Settings to see the remaining balance over time. When the remaining balance jumps back to near full (95%+), a dashed vertical line marks the reset — whether automatic or manual.
+AgentBar records every successfully returned quota window by provider and account. Open **History...** from the menu-bar popover or Settings to see the remaining balance over time. When a quota's reset schedule advances to its next cycle, a dashed vertical line marks the reset.
 
 - Recording is enabled by default.
 - Unchanged balances are sampled every 15 minutes; meaningful balance, label, reset-time, and unlimited-state changes are stored immediately.
@@ -50,6 +52,8 @@ The local database is stored at `~/Library/Application Support/AgentBar/quota-hi
 ```bash
 swift run AgentBar
 ```
+
+The installed app uses `AgentBar Auth v3`, while development runs use an isolated `AgentBar Auth Debug v2` Keychain item. `./scripts/install-app.sh` prefers an Apple Development identity with a stable Team ID so Keychain authorization survives rebuilds.
 
 ## Test
 

@@ -73,7 +73,7 @@ func quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat() async throws {
 }
 
 @Test
-func quotaHistoryRecordsBalanceJumpsAsChangedAndScheduleEvents() async throws {
+func quotaHistoryUsesScheduleChangesAsResetEvents() async throws {
     let fixture = try HistoryStoreFixture(name: #function)
     defer { fixture.cleanup() }
     let account = fixture.account(provider: .gemini, name: "events")
@@ -92,9 +92,8 @@ func quotaHistoryRecordsBalanceJumpsAsChangedAndScheduleEvents() async throws {
 
     let next = start.addingTimeInterval(6 * 60)
     let updatedMetrics = [
-        // Balance jumped from 50% used to 0% used (a reset), but the store no
-        // longer classifies this — it is recorded as a plain change. Reset
-        // detection happens at display time via QuotaHistoryResetDetector.
+        // A balance jump alone remains a plain change. Only a meaningful reset
+        // schedule change identifies a reset.
         historyMetric(id: "balance-jump", usedPercent: 0, resetsAt: nil),
         historyMetric(id: "schedule", usedPercent: 50, resetsAt: next.addingTimeInterval(2 * 60 * 60)),
     ]
@@ -107,10 +106,8 @@ func quotaHistoryRecordsBalanceJumpsAsChangedAndScheduleEvents() async throws {
     let historyAccount = try #require(await fixture.store.accounts().first)
     let windows = try await fixture.store.windows(for: historyAccount.accountKey)
     let events = Dictionary(uniqueKeysWithValues: windows.map { ($0.metricKey, $0.latestSample?.eventKind) })
-    // Balance jumps are stored as `.changed`; reset/likelyReset no longer exist.
-    // The reset is detected later by QuotaHistoryResetDetector at display time.
     #expect(events["balance-jump"] == .changed)
-    #expect(events["schedule"] == .scheduleChanged)
+    #expect(events["schedule"] == .reset)
 }
 
 @Test
@@ -268,6 +265,7 @@ func quotaHistoryHandlesUnlimitedAndDeletesByCutoff() async throws {
 @Test
 func quotaHistoryDownsamplingPreservesEndpointsAndExtremes() {
     let start = Date(timeIntervalSince1970: 1_800_300_000)
+    let resetIndex = 1_111
     let samples = (0 ..< 2_000).map { index in
         QuotaHistorySample(
             windowID: 1,
@@ -277,7 +275,7 @@ func quotaHistoryDownsamplingPreservesEndpointsAndExtremes() {
             remainingLabel: nil,
             resetsAt: nil,
             isUnlimited: false,
-            eventKind: .interval
+            eventKind: index == resetIndex ? .reset : .interval
         )
     }
 
@@ -286,48 +284,58 @@ func quotaHistoryDownsamplingPreservesEndpointsAndExtremes() {
     #expect(result.count <= 400)
     #expect(result.first?.sampledAt == samples.first?.sampledAt)
     #expect(result.last?.sampledAt == samples.last?.sampledAt)
+    #expect(result.contains { $0.eventKind == .reset && $0.sampledAt == samples[resetIndex].sampledAt })
 }
 
 @Test
-func quotaHistoryResetDetectorMarksJumpsAboveThreshold() {
+func quotaHistoryNormalizesLegacyRollingScheduleEvents() {
     let start = Date(timeIntervalSince1970: 1_800_300_000)
-    // remaining% sequence: 20 -> 22 -> 18 -> 98 -> 50 -> 97 -> 96
-    let percents: [Double] = [20, 22, 18, 98, 50, 97, 96]
-    let samples = percents.enumerated().map { index, remaining in
-        QuotaHistorySample(
+    let fiveHours: TimeInterval = 5 * 60 * 60
+    let samples: [QuotaHistorySample] = [
+        .init(
             windowID: 1,
-            sampledAt: start.addingTimeInterval(Double(index * 60)),
-            usedBasisPoints: Int((100 - remaining) * 100),
+            sampledAt: start,
+            usedBasisPoints: 2_000,
             usedLabel: nil,
             remainingLabel: nil,
-            resetsAt: nil,
+            resetsAt: start.addingTimeInterval(fiveHours),
             isUnlimited: false,
-            eventKind: .interval
-        )
-    }
-
-    let resets = QuotaHistoryResetDetector.resetDates(in: samples)
-    // Two transitions: 18->98 (reset) and 50->97 (reset). The 97->96 step is a
-    // sustained near-full plateau, not a fresh reset, so no third marker.
-    #expect(resets.count == 2)
-    #expect(resets == [samples[3].sampledAt, samples[5].sampledAt])
-}
-
-@Test
-func quotaHistoryResetDetectorIgnoresUnlimitedSamples() {
-    let start = Date(timeIntervalSince1970: 1_800_300_000)
-    let samples: [QuotaHistorySample] = [
-        .init(windowID: 1, sampledAt: start, usedBasisPoints: 8000,
-              usedLabel: nil, remainingLabel: nil, resetsAt: nil,
-              isUnlimited: false, eventKind: .interval),
-        // Unlimited samples carry no numeric remaining and must be skipped.
-        .init(windowID: 1, sampledAt: start.addingTimeInterval(60), usedBasisPoints: nil,
-              usedLabel: nil, remainingLabel: nil, resetsAt: nil,
-              isUnlimited: true, eventKind: .changed),
+            eventKind: .initial
+        ),
+        .init(
+            windowID: 1,
+            sampledAt: start.addingTimeInterval(5),
+            usedBasisPoints: 2_000,
+            usedLabel: nil,
+            remainingLabel: nil,
+            resetsAt: start.addingTimeInterval(fiveHours + 5),
+            isUnlimited: false,
+            eventKind: .reset
+        ),
+        .init(
+            windowID: 1,
+            sampledAt: start.addingTimeInterval(10),
+            usedBasisPoints: 2_000,
+            usedLabel: nil,
+            remainingLabel: nil,
+            resetsAt: start.addingTimeInterval(fiveHours + 10),
+            isUnlimited: false,
+            eventKind: .reset
+        ),
+        .init(
+            windowID: 1,
+            sampledAt: start.addingTimeInterval(15),
+            usedBasisPoints: 0,
+            usedLabel: nil,
+            remainingLabel: nil,
+            resetsAt: start.addingTimeInterval((2 * fiveHours) + 10),
+            isUnlimited: false,
+            eventKind: .reset
+        ),
     ]
 
-    let resets = QuotaHistoryResetDetector.resetDates(in: samples)
-    #expect(resets.isEmpty)
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+    #expect(normalized.map(\.eventKind) == [.initial, .changed, .changed, .reset])
 }
 
 @Test
