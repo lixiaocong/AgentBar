@@ -568,6 +568,7 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
 
             let amountChanged = Self.amountChanged(previous.usedBasisPoints, usedBasisPoints)
             let balanceRecovered = Self.balanceRecovered(previous.usedBasisPoints, usedBasisPoints)
+            let terminalExhausted = Self.terminalExhausted(previous.usedBasisPoints, usedBasisPoints)
             labelsChanged = previous.usedLabel != metric.usedLabel ||
                 previous.remainingLabel != metric.remainingLabel
             let scheduleChanged = QuotaHistoryResetSchedule.changed(
@@ -581,6 +582,7 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
                 Int64(Self.samplingInterval * 1_000)
             let needsConfirmation = previous.eventKind == .scheduleChanged ||
                 previous.eventKind == .balanceRecovery ||
+                previous.eventKind == .terminalExhaustion ||
                 previous.eventKind == .reset
 
             guard amountChanged || labelsChanged || scheduleChanged || unlimitedChanged ||
@@ -590,6 +592,7 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
 
             eventKind = Self.eventKind(
                 balanceRecovered: balanceRecovered,
+                terminalExhausted: terminalExhausted,
                 scheduleChanged: scheduleChanged,
                 amountChanged: amountChanged,
                 labelsChanged: labelsChanged,
@@ -625,6 +628,7 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
 
     private static func eventKind(
         balanceRecovered: Bool,
+        terminalExhausted: Bool,
         scheduleChanged: Bool,
         amountChanged: Bool,
         labelsChanged: Bool,
@@ -636,6 +640,9 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
         }
         if balanceRecovered {
             return .balanceRecovery
+        }
+        if terminalExhausted {
+            return .terminalExhaustion
         }
         if amountChanged || labelsChanged || unlimitedChanged {
             return .changed
@@ -962,6 +969,11 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
     private static func balanceRecovered(_ oldValue: Int?, _ newValue: Int?) -> Bool {
         guard let oldValue, let newValue else { return false }
         return oldValue - newValue >= immediateChangeBasisPoints
+    }
+
+    private static func terminalExhausted(_ oldValue: Int?, _ newValue: Int?) -> Bool {
+        guard let oldValue, let newValue else { return false }
+        return oldValue < 10_000 && newValue >= 10_000
     }
 
     private static func isUnlimited(_ metric: AgentQuotaMetric) -> Bool {

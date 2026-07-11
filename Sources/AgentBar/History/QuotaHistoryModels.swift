@@ -16,6 +16,9 @@ enum QuotaHistoryEventKind: Int, Codable, CaseIterable, Sendable {
     // Raw value 4 belonged to the retired `likelyReset` event and must remain
     // unused so legacy databases do not reinterpret those rows as candidates.
     case balanceRecovery = 6
+    // Internal candidate only. A sudden 0% remaining value needs a second
+    // successful sample before History treats the window as exhausted.
+    case terminalExhaustion = 7
     // Keep raw value 5 so existing databases remain readable. New reset events
     // are derived at query time instead of being persisted eagerly.
     case reset = 5
@@ -153,12 +156,14 @@ enum QuotaHistoryResetSchedule {
     /// be repeated by the following stored sample before it becomes authoritative.
     static func normalizeEvents(in samples: [QuotaHistorySample]) -> [QuotaHistorySample] {
         let confirmedSamples = confirmedBalanceRecoveries(
-            in: samples.sorted { $0.sampledAt < $1.sampledAt }
+            in: confirmedTerminalExhaustions(
+                in: samples.sorted { $0.sampledAt < $1.sampledAt }
+            )
         )
         var normalized = confirmedSamples
             .map { sample in
                 switch sample.eventKind {
-                case .scheduleChanged, .balanceRecovery, .reset:
+                case .scheduleChanged, .balanceRecovery, .terminalExhaustion, .reset:
                     return sample.replacingEventKind(.changed)
                 case .initial, .interval, .changed:
                     return sample
@@ -189,6 +194,65 @@ enum QuotaHistoryResetSchedule {
         }
 
         return normalized
+    }
+
+    /// A provider can briefly report a fully exhausted window and immediately
+    /// return to the prior balance. Hide that terminal point unless the next
+    /// successful sample confirms both exhaustion and the schedule generation.
+    private static func confirmedTerminalExhaustions(
+        in samples: [QuotaHistorySample]
+    ) -> [QuotaHistorySample] {
+        guard samples.count > 1 else { return samples }
+
+        var confirmed: [QuotaHistorySample] = []
+        confirmed.reserveCapacity(samples.count)
+
+        for index in samples.indices {
+            let current = samples[index]
+            guard let previous = confirmed.last,
+                  isTerminalExhaustion(from: previous, to: current) else {
+                confirmed.append(current)
+                continue
+            }
+
+            let confirmationIndex = samples.index(after: index)
+            guard confirmationIndex < samples.endIndex,
+                  exhaustionIsConfirmed(
+                    candidate: current,
+                    confirmation: samples[confirmationIndex]
+                  ) else {
+                continue
+            }
+
+            confirmed.append(current)
+        }
+
+        return confirmed
+    }
+
+    private static func isTerminalExhaustion(
+        from previous: QuotaHistorySample,
+        to current: QuotaHistorySample
+    ) -> Bool {
+        guard !previous.isUnlimited,
+              !current.isUnlimited,
+              let previousUsed = previous.usedBasisPoints,
+              let currentUsed = current.usedBasisPoints else {
+            return false
+        }
+        return previousUsed < 10_000 && currentUsed >= 10_000
+    }
+
+    private static func exhaustionIsConfirmed(
+        candidate: QuotaHistorySample,
+        confirmation: QuotaHistorySample
+    ) -> Bool {
+        guard !confirmation.isUnlimited,
+              let confirmationUsed = confirmation.usedBasisPoints,
+              confirmationUsed >= 10_000 else {
+            return false
+        }
+        return schedulesAreEquivalent(candidate, confirmation)
     }
 
     /// A lower used balance means quota became available again. Keep that point

@@ -420,6 +420,82 @@ func quotaHistoryHidesUnconfirmedTrailingBalanceRecovery() {
 }
 
 @Test
+func quotaHistoryRejectsTransientZeroRemainingSpike() {
+    let start = Date(timeIntervalSince1970: 1_800_485_000)
+    let stableSchedule = start.addingTimeInterval(7 * 24 * 60 * 60)
+    let samples = [
+        historySample(at: start, usedBasisPoints: 1_700, resetsAt: stableSchedule, eventKind: .initial),
+        historySample(
+            at: start.addingTimeInterval(5),
+            usedBasisPoints: 10_000,
+            resetsAt: start.addingTimeInterval(5),
+            eventKind: .scheduleChanged
+        ),
+        historySample(
+            at: start.addingTimeInterval(10),
+            usedBasisPoints: 1_700,
+            resetsAt: stableSchedule,
+            eventKind: .scheduleChanged
+        ),
+    ]
+
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+    #expect(normalized.map(\.usedBasisPoints) == [1_700, 1_700])
+    #expect(!normalized.contains { $0.eventKind == .reset })
+}
+
+@Test
+func quotaHistoryConfirmsRealTerminalExhaustion() async throws {
+    let fixture = try HistoryStoreFixture(name: #function)
+    defer { fixture.cleanup() }
+    let account = fixture.account(provider: .codex, name: "terminal")
+    let start = Date(timeIntervalSince1970: 1_800_490_000)
+    let schedule = start.addingTimeInterval(5 * 60 * 60)
+
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(
+            provider: .codex,
+            metrics: [historyMetric(id: "window", usedPercent: 90, resetsAt: schedule)],
+            updatedAt: start
+        ),
+        sampledAt: start
+    )
+
+    let exhaustedAt = start.addingTimeInterval(5)
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(
+            provider: .codex,
+            metrics: [historyMetric(id: "window", usedPercent: 100, resetsAt: schedule)],
+            updatedAt: exhaustedAt
+        ),
+        sampledAt: exhaustedAt
+    )
+
+    let historyAccount = try #require(await fixture.store.accounts().first)
+    let window = try #require(await fixture.store.windows(for: historyAccount.accountKey).first)
+    let unconfirmed = try await fixture.store.samples(for: window.id, startingAt: nil)
+    #expect(unconfirmed.map(\.eventKind) == [.initial, .terminalExhaustion])
+    #expect(QuotaHistoryResetSchedule.normalizeEvents(in: unconfirmed).map(\.usedBasisPoints) == [9_000])
+
+    let confirmedAt = start.addingTimeInterval(10)
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(
+            provider: .codex,
+            metrics: [historyMetric(id: "window", usedPercent: 100, resetsAt: schedule)],
+            updatedAt: confirmedAt
+        ),
+        sampledAt: confirmedAt
+    )
+
+    let stored = try await fixture.store.samples(for: window.id, startingAt: nil)
+    #expect(stored.map(\.eventKind) == [.initial, .terminalExhaustion, .changed])
+    #expect(QuotaHistoryResetSchedule.normalizeEvents(in: stored).map(\.usedBasisPoints) == [9_000, 10_000, 10_000])
+}
+
+@Test
 func quotaHistoryIgnoresScheduleJitterAndIdleWindowActivation() {
     let start = Date(timeIntervalSince1970: 1_800_500_000)
     let schedule = start.addingTimeInterval(5 * 60 * 60)

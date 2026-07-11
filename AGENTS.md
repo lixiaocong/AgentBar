@@ -164,6 +164,7 @@ History rules:
 - Record the first successful snapshot for every `provider + account + metric.id`.
 - Record meaningful changes immediately: at least 0.1 percentage point, changed labels, a reset schedule outside the five-minute equivalence tolerance, or Unlimited state changes.
 - Treat any meaningful balance recovery as a candidate and record the next successful snapshot even when otherwise unchanged. The query path keeps the recovery only when that sample still shows an improved balance on an equivalent reset schedule; otherwise it removes the transient point, including legacy rows already in SQLite.
+- Treat a sudden transition from a non-exhausted value to exactly 0% remaining as a terminal-exhaustion candidate. Keep it only when the next successful sample is also exhausted on an equivalent reset schedule. Ordinary usage increases still record immediately.
 - After recording a reset schedule candidate, also record the next successful snapshot even when otherwise unchanged so the query path can confirm or reject the candidate.
 - Record an unchanged heartbeat after 15 minutes since the last sample.
 - Persist reset schedule changes as candidates, then derive reset events at query time only after the following successful sample confirms the new schedule. Treat deadlines within five minutes, or rolling deadlines with equivalent horizons, as the same schedule. A confirmed later schedule is a reset only after the old deadline is reached or the used balance falls by at least 0.1 percentage point; a confirmed deadline disappearing after it expires is also a reset. Never classify `nil` to a future deadline as a reset. Derived reset events are drawn as dashed vertical lines in the chart.
@@ -319,6 +320,8 @@ Test targets:
 | `quotaHistoryRejectsAlternatingStaleSchedules` | Alternating stale/current provider responses remove transient balance recoveries and do not create reset markers |
 | `quotaHistoryKeepsConfirmedBalanceRecoveryWhenUsageResumes` | A real reset remains visible when the next sample still has improved balance and usage has resumed |
 | `quotaHistoryHidesUnconfirmedTrailingBalanceRecovery` | A final balance recovery is hidden until another successful sample confirms it |
+| `quotaHistoryRejectsTransientZeroRemainingSpike` | A lone 0% remaining response between matching stable values is removed from existing history |
+| `quotaHistoryConfirmsRealTerminalExhaustion` | A 0% remaining value is hidden until the next successful sample confirms exhaustion |
 | `quotaHistoryIgnoresScheduleJitterAndIdleWindowActivation` | Small deadline drift and a newly activated idle quota window are not resets |
 | `quotaHistoryRecognizesConfirmedDeadlineToNilReset` | An expired deadline that stably disappears is recognized as a reset |
 | `quotaHistoryRangeUsesPrecedingSampleForResetContext` | Range queries use the previous sample to classify events at the boundary |
