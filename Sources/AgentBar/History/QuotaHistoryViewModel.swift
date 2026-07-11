@@ -16,7 +16,7 @@ final class QuotaHistoryViewModel {
     var selectedAccountKey: String?
     var windows: [QuotaHistoryWindow] = []
     var samplesByWindowID: [Int64: [QuotaHistorySample]] = [:]
-    var range: QuotaHistoryRange = .week
+    var range: QuotaHistoryRange = .day
     var isLoading = false
     var errorMessage: String?
 

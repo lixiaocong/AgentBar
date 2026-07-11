@@ -22,22 +22,22 @@ enum QuotaHistoryEventKind: Int, Codable, CaseIterable, Sendable {
 }
 
 enum QuotaHistoryRange: String, CaseIterable, Identifiable, Sendable {
+    case hour
+    case halfDay
     case day
     case week
     case month
-    case quarter
-    case year
     case all
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .day: return "24h"
+        case .hour: return "1h"
+        case .halfDay: return "12h"
+        case .day: return "1d"
         case .week: return "7d"
         case .month: return "30d"
-        case .quarter: return "90d"
-        case .year: return "1y"
         case .all: return "All"
         }
     }
@@ -45,16 +45,16 @@ enum QuotaHistoryRange: String, CaseIterable, Identifiable, Sendable {
     func startDate(relativeTo now: Date) -> Date? {
         let seconds: TimeInterval
         switch self {
+        case .hour:
+            seconds = 60 * 60
+        case .halfDay:
+            seconds = 12 * 60 * 60
         case .day:
             seconds = 24 * 60 * 60
         case .week:
             seconds = 7 * 24 * 60 * 60
         case .month:
             seconds = 30 * 24 * 60 * 60
-        case .quarter:
-            seconds = 90 * 24 * 60 * 60
-        case .year:
-            seconds = 365 * 24 * 60 * 60
         case .all:
             return nil
         }
