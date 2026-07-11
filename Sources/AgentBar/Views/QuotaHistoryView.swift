@@ -236,7 +236,11 @@ private struct QuotaHistoryChartCard: View {
     }
 
     private var detailSample: QuotaHistorySample? {
-        hoveredSample ?? samples.last ?? window.latestSample
+        hoveredSample ?? latestVisibleSample
+    }
+
+    private var latestVisibleSample: QuotaHistorySample? {
+        samples.last
     }
 
     private var chartDuration: TimeInterval {
@@ -285,7 +289,7 @@ private struct QuotaHistoryChartCard: View {
 
             Spacer(minLength: 8)
 
-            if let latest = window.latestSample {
+            if let latest = latestVisibleSample {
                 if latest.isUnlimited {
                     Text("Unlimited")
                         .font(.headline.weight(.bold))
@@ -297,7 +301,7 @@ private struct QuotaHistoryChartCard: View {
                 }
             }
 
-            if let resetDate = window.latestSample?.resetsAt,
+            if let resetDate = latestVisibleSample?.resetsAt,
                resetDate > Date() {
                 Text("Resets \(resetDate, style: .relative)")
                     .font(.caption)
@@ -309,12 +313,12 @@ private struct QuotaHistoryChartCard: View {
 
     private var emptyChartState: some View {
         HStack(spacing: 10) {
-            Image(systemName: window.latestSample?.isUnlimited == true ? "infinity" : "clock")
+            Image(systemName: latestVisibleSample?.isUnlimited == true ? "infinity" : "clock")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(provider.historyTint)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(window.latestSample?.isUnlimited == true ? "Unlimited during this period" : "No samples in this range")
+                Text(latestVisibleSample?.isUnlimited == true ? "Unlimited during this period" : "No samples in this range")
                     .font(.subheadline.weight(.semibold))
                 Text("Last recorded \(window.lastSeenAt, style: .relative)")
                     .font(.caption)

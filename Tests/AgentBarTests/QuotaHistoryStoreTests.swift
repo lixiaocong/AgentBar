@@ -73,7 +73,7 @@ func quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat() async throws {
 }
 
 @Test
-func quotaHistoryUsesScheduleChangesAsResetEvents() async throws {
+func quotaHistoryConfirmsScheduleBeforeDerivingReset() async throws {
     let fixture = try HistoryStoreFixture(name: #function)
     defer { fixture.cleanup() }
     let account = fixture.account(provider: .gemini, name: "events")
@@ -90,24 +90,39 @@ func quotaHistoryUsesScheduleChangesAsResetEvents() async throws {
         sampledAt: start
     )
 
-    let next = start.addingTimeInterval(6 * 60)
+    let next = start.addingTimeInterval((60 * 60) + 5)
     let updatedMetrics = [
-        // A balance jump alone remains a plain change. Only a meaningful reset
-        // schedule change identifies a reset.
         historyMetric(id: "balance-jump", usedPercent: 0, resetsAt: nil),
-        historyMetric(id: "schedule", usedPercent: 50, resetsAt: next.addingTimeInterval(2 * 60 * 60)),
+        historyMetric(id: "schedule", usedPercent: 0, resetsAt: next.addingTimeInterval(2 * 60 * 60)),
     ]
     _ = try await fixture.store.record(
         account: account,
         snapshot: historySnapshot(provider: .gemini, metrics: updatedMetrics, updatedAt: next),
         sampledAt: next
     )
+    let confirmation = next.addingTimeInterval(30)
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(provider: .gemini, metrics: updatedMetrics, updatedAt: confirmation),
+        sampledAt: confirmation
+    )
 
     let historyAccount = try #require(await fixture.store.accounts().first)
     let windows = try await fixture.store.windows(for: historyAccount.accountKey)
-    let events = Dictionary(uniqueKeysWithValues: windows.map { ($0.metricKey, $0.latestSample?.eventKind) })
-    #expect(events["balance-jump"] == .changed)
-    #expect(events["schedule"] == .reset)
+    let balanceWindow = try #require(windows.first { $0.metricKey == "balance-jump" })
+    let scheduleWindow = try #require(windows.first { $0.metricKey == "schedule" })
+    #expect(balanceWindow.latestSample?.eventKind == .changed)
+
+    let storedBalance = try await fixture.store.samples(for: balanceWindow.id, startingAt: nil)
+    #expect(storedBalance.map(\.eventKind) == [.initial, .balanceRecovery, .changed])
+    let normalizedBalance = QuotaHistoryResetSchedule.normalizeEvents(in: storedBalance)
+    #expect(normalizedBalance.map(\.usedBasisPoints) == [5_000, 0, 0])
+    #expect(!normalizedBalance.contains { $0.eventKind == .reset })
+
+    let stored = try await fixture.store.samples(for: scheduleWindow.id, startingAt: nil)
+    #expect(stored.map(\.eventKind) == [.initial, .scheduleChanged, .changed])
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: stored)
+    #expect(normalized.map(\.eventKind) == [.initial, .reset, .changed])
 }
 
 @Test
@@ -332,10 +347,157 @@ func quotaHistoryNormalizesLegacyRollingScheduleEvents() {
             isUnlimited: false,
             eventKind: .reset
         ),
+        .init(
+            windowID: 1,
+            sampledAt: start.addingTimeInterval(20),
+            usedBasisPoints: 0,
+            usedLabel: nil,
+            remainingLabel: nil,
+            resetsAt: start.addingTimeInterval((2 * fiveHours) + 10),
+            isUnlimited: false,
+            eventKind: .changed
+        ),
     ]
 
     let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
-    #expect(normalized.map(\.eventKind) == [.initial, .changed, .changed, .reset])
+    #expect(normalized.map(\.eventKind) == [.initial, .changed, .changed, .reset, .changed])
+}
+
+@Test
+func quotaHistoryRejectsAlternatingStaleSchedules() {
+    let start = Date(timeIntervalSince1970: 1_800_400_000)
+    let oldSchedule = start.addingTimeInterval(3 * 60 * 60)
+    let transientSchedule = start.addingTimeInterval((4 * 60 * 60) + (30 * 60))
+    let samples = [
+        historySample(at: start, usedBasisPoints: 3_700, resetsAt: oldSchedule, eventKind: .initial),
+        historySample(at: start.addingTimeInterval(5), usedBasisPoints: 0, resetsAt: transientSchedule, eventKind: .reset),
+        historySample(at: start.addingTimeInterval(10), usedBasisPoints: 3_700, resetsAt: oldSchedule, eventKind: .reset),
+        historySample(at: start.addingTimeInterval(15), usedBasisPoints: 0, resetsAt: transientSchedule, eventKind: .reset),
+        historySample(at: start.addingTimeInterval(20), usedBasisPoints: 3_700, resetsAt: oldSchedule, eventKind: .reset),
+    ]
+
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+    #expect(normalized.map(\.usedBasisPoints) == [3_700, 3_700, 3_700])
+    #expect(!normalized.contains { $0.eventKind == .reset })
+}
+
+@Test
+func quotaHistoryKeepsConfirmedBalanceRecoveryWhenUsageResumes() {
+    let start = Date(timeIntervalSince1970: 1_800_450_000)
+    let oldSchedule = start.addingTimeInterval(3 * 60 * 60)
+    let newSchedule = start.addingTimeInterval(5 * 60 * 60)
+    let samples = [
+        historySample(at: start, usedBasisPoints: 3_700, resetsAt: oldSchedule, eventKind: .initial),
+        historySample(at: start.addingTimeInterval(5), usedBasisPoints: 0, resetsAt: newSchedule, eventKind: .balanceRecovery),
+        historySample(at: start.addingTimeInterval(10), usedBasisPoints: 100, resetsAt: newSchedule, eventKind: .changed),
+    ]
+
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+    #expect(normalized.map(\.usedBasisPoints) == [3_700, 0, 100])
+    #expect(normalized.map(\.eventKind) == [.initial, .reset, .changed])
+}
+
+@Test
+func quotaHistoryHidesUnconfirmedTrailingBalanceRecovery() {
+    let start = Date(timeIntervalSince1970: 1_800_475_000)
+    let samples = [
+        historySample(
+            at: start,
+            usedBasisPoints: 3_700,
+            resetsAt: start.addingTimeInterval(3 * 60 * 60),
+            eventKind: .initial
+        ),
+        historySample(
+            at: start.addingTimeInterval(5),
+            usedBasisPoints: 0,
+            resetsAt: start.addingTimeInterval(5 * 60 * 60),
+            eventKind: .balanceRecovery
+        ),
+    ]
+
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+    #expect(normalized.map(\.usedBasisPoints) == [3_700])
+}
+
+@Test
+func quotaHistoryIgnoresScheduleJitterAndIdleWindowActivation() {
+    let start = Date(timeIntervalSince1970: 1_800_500_000)
+    let schedule = start.addingTimeInterval(5 * 60 * 60)
+    let jitteredSchedule = schedule.addingTimeInterval(90)
+    let jitter = [
+        historySample(at: start, usedBasisPoints: 2_000, resetsAt: schedule, eventKind: .initial),
+        historySample(at: start.addingTimeInterval(60), usedBasisPoints: 2_000, resetsAt: jitteredSchedule, eventKind: .scheduleChanged),
+        historySample(at: start.addingTimeInterval(120), usedBasisPoints: 2_000, resetsAt: jitteredSchedule, eventKind: .changed),
+    ]
+    #expect(!QuotaHistoryResetSchedule.normalizeEvents(in: jitter).contains { $0.eventKind == .reset })
+
+    let activatedSchedule = start.addingTimeInterval(6 * 60 * 60)
+    let activation = [
+        historySample(at: start, usedBasisPoints: 0, resetsAt: nil, eventKind: .initial),
+        historySample(at: start.addingTimeInterval(60), usedBasisPoints: 100, resetsAt: activatedSchedule, eventKind: .scheduleChanged),
+        historySample(at: start.addingTimeInterval(120), usedBasisPoints: 100, resetsAt: activatedSchedule, eventKind: .changed),
+    ]
+    #expect(!QuotaHistoryResetSchedule.normalizeEvents(in: activation).contains { $0.eventKind == .reset })
+}
+
+@Test
+func quotaHistoryRecognizesConfirmedDeadlineToNilReset() {
+    let start = Date(timeIntervalSince1970: 1_800_600_000)
+    let deadline = start.addingTimeInterval(5 * 60)
+    let samples = [
+        historySample(at: start, usedBasisPoints: 100, resetsAt: deadline, eventKind: .initial),
+        historySample(at: deadline.addingTimeInterval(5), usedBasisPoints: 0, resetsAt: nil, eventKind: .scheduleChanged),
+        historySample(at: deadline.addingTimeInterval(10), usedBasisPoints: 0, resetsAt: nil, eventKind: .changed),
+    ]
+
+    let normalized = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+    #expect(normalized.map(\.eventKind) == [.initial, .reset, .changed])
+}
+
+@Test
+@MainActor
+func quotaHistoryRangeUsesPrecedingSampleForResetContext() async throws {
+    let fixture = try HistoryStoreFixture(name: #function)
+    defer { fixture.cleanup() }
+    let account = fixture.account(provider: .codex, name: "range-context")
+    let now = Date(timeIntervalSince1970: 1_800_700_000)
+    let rangeStart = try #require(QuotaHistoryRange.day.startDate(relativeTo: now))
+    let previousDate = rangeStart.addingTimeInterval(-60)
+    let resetDate = rangeStart.addingTimeInterval(5)
+
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(
+            provider: .codex,
+            metrics: [historyMetric(id: "window", usedPercent: 50, resetsAt: rangeStart)],
+            updatedAt: previousDate
+        ),
+        sampledAt: previousDate
+    )
+    let resetMetrics = [
+        historyMetric(id: "window", usedPercent: 0, resetsAt: resetDate.addingTimeInterval(60 * 60)),
+    ]
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(provider: .codex, metrics: resetMetrics, updatedAt: resetDate),
+        sampledAt: resetDate
+    )
+    let confirmationDate = resetDate.addingTimeInterval(30)
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(provider: .codex, metrics: resetMetrics, updatedAt: confirmationDate),
+        sampledAt: confirmationDate
+    )
+
+    let historyAccount = try #require(await fixture.store.accounts().first)
+    let window = try #require(await fixture.store.windows(for: historyAccount.accountKey).first)
+    let suiteName = "AgentBarHistoryTests.\(#function).\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let manager = QuotaHistoryManager(store: fixture.store, userDefaults: defaults)
+
+    let samples = try await manager.samples(for: window.id, range: .day, now: now)
+    #expect(samples.map(\.eventKind) == [.reset, .changed])
 }
 
 @Test
@@ -433,5 +595,23 @@ private func historyMetric(
         usedLabel: usedLabel ?? "\(Int(usedPercent.rounded()))% used",
         remainingLabel: remainingLabel ?? "\(Int((100 - usedPercent).rounded()))% left",
         resetsAt: resetsAt
+    )
+}
+
+private func historySample(
+    at sampledAt: Date,
+    usedBasisPoints: Int?,
+    resetsAt: Date?,
+    eventKind: QuotaHistoryEventKind
+) -> QuotaHistorySample {
+    QuotaHistorySample(
+        windowID: 1,
+        sampledAt: sampledAt,
+        usedBasisPoints: usedBasisPoints,
+        usedLabel: nil,
+        remainingLabel: nil,
+        resetsAt: resetsAt,
+        isUnlimited: false,
+        eventKind: eventKind
     )
 }

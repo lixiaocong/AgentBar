@@ -9,7 +9,15 @@ enum QuotaHistoryEventKind: Int, Codable, CaseIterable, Sendable {
     case initial = 0
     case interval = 1
     case changed = 2
-    // Keep raw value 5 so existing schedule-change samples decode as resets.
+    // Internal candidate only. The query path confirms whether it was a reset.
+    case scheduleChanged = 3
+    // Internal candidate only. Balance recoveries need a second successful
+    // sample so transient provider responses do not create false resets.
+    // Raw value 4 belonged to the retired `likelyReset` event and must remain
+    // unused so legacy databases do not reinterpret those rows as candidates.
+    case balanceRecovery = 6
+    // Keep raw value 5 so existing databases remain readable. New reset events
+    // are derived at query time instead of being persisted eagerly.
     case reset = 5
 }
 
@@ -113,7 +121,10 @@ struct QuotaHistorySample: Identifiable, Equatable, Sendable {
 }
 
 enum QuotaHistoryResetSchedule {
-    static let toleranceMilliseconds: Int64 = 60 * 1_000
+    static let toleranceMilliseconds: Int64 = 5 * 60 * 1_000
+
+    private static let deadlineGraceMilliseconds: Int64 = 2 * 60 * 1_000
+    private static let balanceImprovementBasisPoints = 10
 
     static func changed(
         previousSampledAtMilliseconds: Int64,
@@ -137,26 +148,167 @@ enum QuotaHistoryResetSchedule {
         }
     }
 
-    /// Reclassifies legacy rolling countdown events using the same schedule
-    /// semantics applied when new samples are written.
+    /// Derives resets from confirmed schedule generations. Providers can briefly
+    /// alternate between stale and current responses, so a changed schedule must
+    /// be repeated by the following stored sample before it becomes authoritative.
     static func normalizeEvents(in samples: [QuotaHistorySample]) -> [QuotaHistorySample] {
-        let sorted = samples.sorted { $0.sampledAt < $1.sampledAt }
-        var previous: QuotaHistorySample?
+        let confirmedSamples = confirmedBalanceRecoveries(
+            in: samples.sorted { $0.sampledAt < $1.sampledAt }
+        )
+        var normalized = confirmedSamples
+            .map { sample in
+                switch sample.eventKind {
+                case .scheduleChanged, .balanceRecovery, .reset:
+                    return sample.replacingEventKind(.changed)
+                case .initial, .interval, .changed:
+                    return sample
+                }
+            }
+        guard normalized.count > 1 else { return normalized }
 
-        return sorted.map { sample in
-            defer { previous = sample }
-            guard sample.eventKind == .reset,
-                  let previous else {
-                return sample.eventKind == .reset ? sample.replacingEventKind(.changed) : sample
+        var stableIndex = 0
+        for index in normalized.indices.dropFirst() {
+            let stable = normalized[stableIndex]
+            let current = normalized[index]
+
+            if schedulesAreEquivalent(stable, current) {
+                stableIndex = index
+                continue
             }
 
-            let isReset = changed(
-                previousSampledAtMilliseconds: milliseconds(previous.sampledAt),
-                previousResetMilliseconds: previous.resetsAt.map(milliseconds),
-                sampledAtMilliseconds: milliseconds(sample.sampledAt),
-                resetMilliseconds: sample.resetsAt.map(milliseconds)
-            )
-            return isReset ? sample : sample.replacingEventKind(.changed)
+            let confirmationIndex = normalized.index(after: index)
+            guard confirmationIndex < normalized.endIndex,
+                  schedulesAreEquivalent(current, normalized[confirmationIndex]) else {
+                continue
+            }
+
+            if isResetTransition(from: stable, to: current) {
+                normalized[index] = current.replacingEventKind(.reset)
+            }
+            stableIndex = index
+        }
+
+        return normalized
+    }
+
+    /// A lower used balance means quota became available again. Keep that point
+    /// only when the next successful sample reports the same schedule generation
+    /// and still shows a meaningful improvement over the previous stable value.
+    /// This also removes transient recovery points already stored by older builds.
+    private static func confirmedBalanceRecoveries(
+        in samples: [QuotaHistorySample]
+    ) -> [QuotaHistorySample] {
+        guard samples.count > 1 else { return samples }
+
+        var confirmed: [QuotaHistorySample] = []
+        confirmed.reserveCapacity(samples.count)
+
+        for index in samples.indices {
+            let current = samples[index]
+            guard let previous = confirmed.last,
+                  isBalanceRecovery(from: previous, to: current) else {
+                confirmed.append(current)
+                continue
+            }
+
+            let confirmationIndex = samples.index(after: index)
+            guard confirmationIndex < samples.endIndex,
+                  recoveryIsConfirmed(
+                    from: previous,
+                    candidate: current,
+                    confirmation: samples[confirmationIndex]
+                  ) else {
+                continue
+            }
+
+            confirmed.append(current)
+        }
+
+        return confirmed
+    }
+
+    private static func isBalanceRecovery(
+        from previous: QuotaHistorySample,
+        to current: QuotaHistorySample
+    ) -> Bool {
+        guard !previous.isUnlimited,
+              !current.isUnlimited,
+              let previousUsed = previous.usedBasisPoints,
+              let currentUsed = current.usedBasisPoints else {
+            return false
+        }
+        return previousUsed - currentUsed >= balanceImprovementBasisPoints
+    }
+
+    private static func recoveryIsConfirmed(
+        from previous: QuotaHistorySample,
+        candidate: QuotaHistorySample,
+        confirmation: QuotaHistorySample
+    ) -> Bool {
+        guard !confirmation.isUnlimited,
+              let previousUsed = previous.usedBasisPoints,
+              let confirmationUsed = confirmation.usedBasisPoints,
+              previousUsed - confirmationUsed >= balanceImprovementBasisPoints else {
+            return false
+        }
+        return schedulesAreEquivalent(candidate, confirmation)
+    }
+
+    private static func schedulesAreEquivalent(
+        _ lhs: QuotaHistorySample,
+        _ rhs: QuotaHistorySample
+    ) -> Bool {
+        switch (lhs.resetsAt, rhs.resetsAt) {
+        case (nil, nil):
+            return true
+        case (_?, nil), (nil, _?):
+            return false
+        case let (lhsReset?, rhsReset?):
+            let lhsResetMilliseconds = milliseconds(lhsReset)
+            let rhsResetMilliseconds = milliseconds(rhsReset)
+            if abs(rhsResetMilliseconds - lhsResetMilliseconds) < toleranceMilliseconds {
+                return true
+            }
+
+            let lhsHorizon = lhsResetMilliseconds - milliseconds(lhs.sampledAt)
+            let rhsHorizon = rhsResetMilliseconds - milliseconds(rhs.sampledAt)
+            return abs(rhsHorizon - lhsHorizon) < toleranceMilliseconds
+        }
+    }
+
+    private static func isResetTransition(
+        from previous: QuotaHistorySample,
+        to current: QuotaHistorySample
+    ) -> Bool {
+        let sampledAtMilliseconds = milliseconds(current.sampledAt)
+
+        switch (previous.resetsAt, current.resetsAt) {
+        case let (previousReset?, currentReset?):
+            let previousResetMilliseconds = milliseconds(previousReset)
+            let currentResetMilliseconds = milliseconds(currentReset)
+            guard currentResetMilliseconds - previousResetMilliseconds >= toleranceMilliseconds else {
+                return false
+            }
+
+            let deadlineReached = sampledAtMilliseconds >=
+                previousResetMilliseconds - deadlineGraceMilliseconds
+            let balanceImproved: Bool
+            if let previousUsed = previous.usedBasisPoints,
+               let currentUsed = current.usedBasisPoints {
+                balanceImproved = previousUsed - currentUsed >= balanceImprovementBasisPoints
+            } else {
+                balanceImproved = false
+            }
+            return deadlineReached || balanceImproved
+
+        case let (previousReset?, nil):
+            return sampledAtMilliseconds >=
+                milliseconds(previousReset) - deadlineGraceMilliseconds
+
+        case (nil, _?), (nil, nil):
+            // A new future deadline after an idle period starts a quota window;
+            // it does not mean a previous quota window reset.
+            return false
         }
     }
 

@@ -198,6 +198,21 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
     }
 
     func samples(for windowID: Int64, startingAt: Date?) async throws -> [QuotaHistorySample] {
+        try readSamples(for: windowID, startingAt: startingAt, includePreceding: false)
+    }
+
+    func samplesIncludingPreceding(
+        for windowID: Int64,
+        startingAt: Date?
+    ) async throws -> [QuotaHistorySample] {
+        try readSamples(for: windowID, startingAt: startingAt, includePreceding: true)
+    }
+
+    private func readSamples(
+        for windowID: Int64,
+        startingAt: Date?,
+        includePreceding: Bool
+    ) throws -> [QuotaHistorySample] {
         let database = try openDatabaseIfNeeded()
         let startMilliseconds = startingAt.map(Self.milliseconds)
         var effectiveLabels = try labelsBefore(
@@ -215,6 +230,20 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
                 WHERE window_id = ?
                 ORDER BY sampled_at_ms
                 """
+        } else if includePreceding {
+            sql = """
+                SELECT sampled_at_ms, used_basis_points, used_label, remaining_label,
+                       resets_at_ms, is_unlimited, event_kind
+                FROM history_samples
+                WHERE window_id = ? AND (
+                    sampled_at_ms >= ? OR sampled_at_ms = (
+                        SELECT MAX(sampled_at_ms)
+                        FROM history_samples
+                        WHERE window_id = ? AND sampled_at_ms < ?
+                    )
+                )
+                ORDER BY sampled_at_ms
+                """
         } else {
             sql = """
                 SELECT sampled_at_ms, used_basis_points, used_label, remaining_label,
@@ -230,6 +259,10 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
         try bind(windowID, to: 1, in: statement, database: database)
         if let startMilliseconds {
             try bind(startMilliseconds, to: 2, in: statement, database: database)
+            if includePreceding {
+                try bind(windowID, to: 3, in: statement, database: database)
+                try bind(startMilliseconds, to: 4, in: statement, database: database)
+            }
         }
 
         var samples: [QuotaHistorySample] = []
@@ -534,24 +567,30 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
             }
 
             let amountChanged = Self.amountChanged(previous.usedBasisPoints, usedBasisPoints)
+            let balanceRecovered = Self.balanceRecovered(previous.usedBasisPoints, usedBasisPoints)
             labelsChanged = previous.usedLabel != metric.usedLabel ||
                 previous.remainingLabel != metric.remainingLabel
-            let resetChanged = QuotaHistoryResetSchedule.changed(
+            let scheduleChanged = QuotaHistoryResetSchedule.changed(
                 previousSampledAtMilliseconds: previous.sampledAtMilliseconds,
                 previousResetMilliseconds: previous.resetsAtMilliseconds,
                 sampledAtMilliseconds: sampledAtMilliseconds,
-                resetMilliseconds: resetMilliseconds,
+                resetMilliseconds: resetMilliseconds
             )
             let unlimitedChanged = previous.isUnlimited != unlimited
             let intervalElapsed = sampledAtMilliseconds - previous.sampledAtMilliseconds >=
                 Int64(Self.samplingInterval * 1_000)
+            let needsConfirmation = previous.eventKind == .scheduleChanged ||
+                previous.eventKind == .balanceRecovery ||
+                previous.eventKind == .reset
 
-            guard amountChanged || labelsChanged || resetChanged || unlimitedChanged || intervalElapsed else {
+            guard amountChanged || labelsChanged || scheduleChanged || unlimitedChanged ||
+                intervalElapsed || needsConfirmation else {
                 return false
             }
 
             eventKind = Self.eventKind(
-                resetChanged: resetChanged,
+                balanceRecovered: balanceRecovered,
+                scheduleChanged: scheduleChanged,
                 amountChanged: amountChanged,
                 labelsChanged: labelsChanged,
                 unlimitedChanged: unlimitedChanged,
@@ -585,14 +624,18 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
     }
 
     private static func eventKind(
-        resetChanged: Bool,
+        balanceRecovered: Bool,
+        scheduleChanged: Bool,
         amountChanged: Bool,
         labelsChanged: Bool,
         unlimitedChanged: Bool,
         intervalElapsed: Bool
     ) -> QuotaHistoryEventKind {
-        if resetChanged {
-            return .reset
+        if scheduleChanged {
+            return .scheduleChanged
+        }
+        if balanceRecovered {
+            return .balanceRecovery
         }
         if amountChanged || labelsChanged || unlimitedChanged {
             return .changed
@@ -914,6 +957,11 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
         case (_?, nil), (nil, _?):
             return true
         }
+    }
+
+    private static func balanceRecovered(_ oldValue: Int?, _ newValue: Int?) -> Bool {
+        guard let oldValue, let newValue else { return false }
+        return oldValue - newValue >= immediateChangeBasisPoints
     }
 
     private static func isUnlimited(_ metric: AgentQuotaMetric) -> Bool {

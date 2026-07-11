@@ -85,3 +85,15 @@ func widgetStateStoreChoosesNewestGeneratedState() {
 
     #expect(selectedState?.providers.map(\.id) == ["new-codex"])
 }
+
+@Test
+func widgetStateStoreNeverWritesIntoWidgetSandboxContainer() {
+    let writeURLs = AgentWidgetStateStore.writeSnapshotURLs(fileManager: .default)
+
+    #expect(!writeURLs.isEmpty)
+    #expect(!writeURLs.contains { $0.path.contains("/Library/Containers/") })
+    #expect(!writeURLs.contains { $0.path.contains("/Library/Group Containers/") })
+    #expect(writeURLs.contains {
+        $0.path.hasSuffix("/Library/Application Support/AgentBar/widget-state.json")
+    })
+}

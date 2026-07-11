@@ -1,13 +1,13 @@
 import Foundation
+import Security
 
 public enum AgentBarWidgetConstants {
     public static let appBundleIdentifier = "com.agentbar.menu"
     public static let widgetBundleIdentifier = "com.agentbar.menu.widget"
-    public static let appGroupIdentifier = "group.com.agentbar.shared"
+    public static let appGroupIdentifier = "CP22VZ6846.com.agentbar.menu.shared"
     public static let kind = "AgentBarDesktopWidget"
     public static let snapshotFilename = "widget-state.json"
     public static let snapshotDirectoryName = "AgentBar"
-    public static let snapshotDefaultsKey = "widgetStateData"
     public static let cacheFreshnessInterval: TimeInterval = 5 * 60
     public static let timelineRefreshInterval: TimeInterval = 60
 }
@@ -118,15 +118,6 @@ public struct AgentWidgetStateStore {
         var loadedStates: [AgentWidgetState] = []
         var lastError: Error?
 
-        if let sharedDefaults,
-           let data = sharedDefaults.data(forKey: AgentBarWidgetConstants.snapshotDefaultsKey) {
-            do {
-                loadedStates.append(try Self.decoder.decode(AgentWidgetState.self, from: data))
-            } catch {
-                lastError = error
-            }
-        }
-
         for fileURL in Self.readSnapshotURLs(fileManager: fileManager)
         where fileManager.fileExists(atPath: fileURL.path) {
             do {
@@ -152,12 +143,6 @@ public struct AgentWidgetStateStore {
         let data = try Self.encoder.encode(state)
         var savedAtLeastOnce = false
         var lastError: Error?
-
-        if let sharedDefaults {
-            sharedDefaults.set(data, forKey: AgentBarWidgetConstants.snapshotDefaultsKey)
-            sharedDefaults.synchronize()
-            savedAtLeastOnce = true
-        }
 
         for fileURL in Self.writeSnapshotURLs(fileManager: fileManager) {
             do {
@@ -198,10 +183,6 @@ public struct AgentWidgetStateStore {
         }
     }
 
-    private var sharedDefaults: UserDefaults? {
-        UserDefaults(suiteName: AgentBarWidgetConstants.appGroupIdentifier)
-    }
-
     private static func readSnapshotURLs(fileManager: FileManager) -> [URL] {
         if isWidgetExtension {
             return uniqueURLs(
@@ -213,7 +194,7 @@ public struct AgentWidgetStateStore {
         return uniqueURLs(writeSnapshotURLs(fileManager: fileManager))
     }
 
-    private static func writeSnapshotURLs(fileManager: FileManager) -> [URL] {
+    static func writeSnapshotURLs(fileManager: FileManager) -> [URL] {
         var urls: [URL] = []
 
         urls.append(contentsOf: appGroupSnapshotURLs(fileManager: fileManager))
@@ -231,29 +212,12 @@ public struct AgentWidgetStateStore {
         }
 
         urls.append(legacySnapshotURL(fileManager: fileManager))
-        urls.append(contentsOf: widgetSandboxSnapshotURLs(fileManager: fileManager))
 
         return uniqueURLs(urls)
     }
 
-    /// Paths inside the widget extension's sandbox container, writable by the unsandboxed main app.
-    private static func widgetSandboxSnapshotURLs(fileManager: FileManager) -> [URL] {
-        let containerPath = fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library/Containers", directoryHint: .isDirectory)
-            .appending(path: AgentBarWidgetConstants.widgetBundleIdentifier, directoryHint: .isDirectory)
-            .appending(path: "Data", directoryHint: .isDirectory)
-
-        return [
-            containerPath
-                .appending(path: "Library/Application Support", directoryHint: .isDirectory)
-                .appending(path: AgentBarWidgetConstants.snapshotDirectoryName, directoryHint: .isDirectory)
-                .appending(path: AgentBarWidgetConstants.snapshotFilename),
-            containerPath
-                .appending(path: AgentBarWidgetConstants.snapshotFilename)
-        ]
-    }
-
-    /// Paths the widget extension can read from within its own sandbox.
+    /// Legacy paths the widget extension can read from within its own sandbox.
+    /// The host app must never write here; doing so triggers macOS App Data access.
     private static func widgetLocalSnapshotURLs(fileManager: FileManager) -> [URL] {
         let home = fileManager.homeDirectoryForCurrentUser
         return [
@@ -267,7 +231,8 @@ public struct AgentWidgetStateStore {
     }
 
     private static func appGroupSnapshotURLs(fileManager: FileManager) -> [URL] {
-        guard let sharedContainerURL = fileManager.containerURL(
+        guard processHasAppGroupEntitlement,
+              let sharedContainerURL = fileManager.containerURL(
             forSecurityApplicationGroupIdentifier: AgentBarWidgetConstants.appGroupIdentifier
         ) else {
             return []
@@ -280,6 +245,18 @@ public struct AgentWidgetStateStore {
                 .appending(path: AgentBarWidgetConstants.snapshotFilename),
             sharedContainerURL.appending(path: AgentBarWidgetConstants.snapshotFilename)
         ]
+    }
+
+    private static var processHasAppGroupEntitlement: Bool {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let groups = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.security.application-groups" as CFString,
+                nil
+              ) as? [String] else {
+            return false
+        }
+        return groups.contains(AgentBarWidgetConstants.appGroupIdentifier)
     }
 
     private static func legacySnapshotURL(fileManager: FileManager) -> URL {

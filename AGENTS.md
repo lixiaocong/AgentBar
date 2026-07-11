@@ -162,9 +162,11 @@ Quota history is stored separately at `~/Library/Application Support/AgentBar/qu
 History rules:
 
 - Record the first successful snapshot for every `provider + account + metric.id`.
-- Record meaningful changes immediately: at least 0.1 percentage point, changed labels, changed reset time, or Unlimited state changes.
+- Record meaningful changes immediately: at least 0.1 percentage point, changed labels, a reset schedule outside the five-minute equivalence tolerance, or Unlimited state changes.
+- Treat any meaningful balance recovery as a candidate and record the next successful snapshot even when otherwise unchanged. The query path keeps the recovery only when that sample still shows an improved balance on an equivalent reset schedule; otherwise it removes the transient point, including legacy rows already in SQLite.
+- After recording a reset schedule candidate, also record the next successful snapshot even when otherwise unchanged so the query path can confirm or reject the candidate.
 - Record an unchanged heartbeat after 15 minutes since the last sample.
-- Treat a meaningful reset schedule change as the reset event. Balance changes alone do not infer resets; recorded reset events are drawn as dashed vertical lines in the chart.
+- Persist reset schedule changes as candidates, then derive reset events at query time only after the following successful sample confirms the new schedule. Treat deadlines within five minutes, or rolling deadlines with equivalent horizons, as the same schedule. A confirmed later schedule is a reset only after the old deadline is reached or the used balance falls by at least 0.1 percentage point; a confirmed deadline disappearing after it expires is also a reset. Never classify `nil` to a future deadline as a reset. Derived reset events are drawn as dashed vertical lines in the chart.
 - Keep disappeared dynamic metrics and removed accounts until the user clears their history.
 - History errors are additive and must never replace or fail the live provider snapshot.
 - Keep history macOS-only for v1; do not add it to the widget state or Windows project without a dedicated parity change.
@@ -312,8 +314,14 @@ Test targets:
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
 | `quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat` | Sampling threshold, deduplication, and label carry-forward |
-| `quotaHistoryUsesScheduleChangesAsResetEvents` | Balance jumps stay plain changes; meaningful reset schedule changes become resets |
-| `quotaHistoryNormalizesLegacyRollingScheduleEvents` | Legacy rolling countdown changes are filtered while real schedule advances remain resets |
+| `quotaHistoryConfirmsScheduleBeforeDerivingReset` | Schedule candidates require a repeated state before a reset is derived |
+| `quotaHistoryNormalizesLegacyRollingScheduleEvents` | Legacy rolling countdown changes are filtered while confirmed real schedule advances remain resets |
+| `quotaHistoryRejectsAlternatingStaleSchedules` | Alternating stale/current provider responses remove transient balance recoveries and do not create reset markers |
+| `quotaHistoryKeepsConfirmedBalanceRecoveryWhenUsageResumes` | A real reset remains visible when the next sample still has improved balance and usage has resumed |
+| `quotaHistoryHidesUnconfirmedTrailingBalanceRecovery` | A final balance recovery is hidden until another successful sample confirms it |
+| `quotaHistoryIgnoresScheduleJitterAndIdleWindowActivation` | Small deadline drift and a newly activated idle quota window are not resets |
+| `quotaHistoryRecognizesConfirmedDeadlineToNilReset` | An expired deadline that stably disappears is recognized as a reset |
+| `quotaHistoryRangeUsesPrecedingSampleForResetContext` | Range queries use the previous sample to classify events at the boundary |
 | `quotaHistoryDownsamplingPreservesEndpointsAndExtremes` | Downsampling keeps first/last/extreme points and reset events within bucket count |
 | `quotaHistoryHandlesUnlimitedAndDeletesByCutoff` | Unlimited state and explicit retention cleanup |
 | `historyWindowUsesNativeSidebarSplitView` | Native split items, fixed-window collapse behavior, and toolbar configuration |
@@ -323,6 +331,8 @@ Test targets:
 ## Widget extension
 
 The macOS desktop widget (`Sources/AgentBarWidgetExtension/AgentBarWidgetExtension.swift`) shows **one** agent account per widget instance. The list of available accounts is materialized into a shared `AgentWidgetState` blob written by the host app into an App Group container, and read back by the widget timeline provider through `AgentWidgetStateStore`.
+
+Both `AgentBar.entitlements` and `AgentBarWidget.entitlements` must include `CP22VZ6846.com.agentbar.menu.shared`. Keep the Team ID prefix: unlike a `group.` identifier, this macOS-only form is authorized by the signing Team ID and does not require an embedded provisioning profile. A manually signed build that claims an unprovisioned `group.` container triggers macOS's App Data permission prompt. Share widget state through JSON files in that App Group; do not add a duplicate `UserDefaults(suiteName:)` channel or call `synchronize()`, because synchronous App Group preference access can block launch in `cfprefsd`. Before resolving the App Group container, verify the current process actually carries the entitlement with `SecTaskCopyValueForEntitlement`; unsigned tests and `swift run` builds must fall back to their own Application Support directory. The host app may otherwise write only to its own Application Support directory. Never write directly into `~/Library/Containers/com.agentbar.menu.widget/Data`: macOS treats the extension container as another app's protected data, which causes an App Data permission prompt on launch and can block file writes. The extension-local paths in `widgetLocalSnapshotURLs` are read-only legacy fallbacks. Do not reuse the retired `group.com.agentbar.shared` or `group.com.agentbar.menu.shared` identifiers: those containers may belong to older or unprovisioned builds and can themselves trigger the same permission prompt.
 
 Each widget instance is configured via a `WidgetConfigurationIntent`:
 
