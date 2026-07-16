@@ -82,10 +82,19 @@ final class QuotaHistoryManager: QuotaHistoryRecording {
             startingAt: startDate
         )
         let normalizedSamples = QuotaHistoryResetSchedule.normalizeEvents(in: samples)
+        let precedingSample = startDate.flatMap { startDate in
+            normalizedSamples.last { $0.sampledAt < startDate }
+        }
         let samplesInRange = startDate.map { startDate in
             normalizedSamples.filter { $0.sampledAt >= startDate }
         } ?? normalizedSamples
-        return QuotaHistoryDownsampler.downsample(samplesInRange)
+        let downsampledSamples = QuotaHistoryDownsampler.downsample(samplesInRange)
+        return QuotaHistoryCarryForward.extend(
+            downsampledSamples,
+            precedingSample: precedingSample,
+            startingAt: startDate,
+            endingAt: now
+        )
     }
 
     func refreshStats() {

@@ -213,30 +213,23 @@ private struct QuotaHistoryChartCard: View {
     }
 
     private var resetSamples: [QuotaHistorySample] {
-        numericSamples.filter { $0.eventKind == .reset }
+        numericSamples.filter { !$0.isCarriedForward && $0.eventKind == .reset }
+    }
+
+    private var smoothedSamples: [QuotaHistorySample] {
+        QuotaHistoryChartSmoother.samples(from: numericSamples)
     }
 
     private var segments: [QuotaHistoryChartSegment] {
-        var result: [QuotaHistoryChartSegment] = []
-        var current: [QuotaHistorySample] = []
-
-        for sample in numericSamples {
-            if let previous = current.last,
-               sample.sampledAt.timeIntervalSince(previous.sampledAt) > 40 * 60 {
-                result.append(QuotaHistoryChartSegment(index: result.count, samples: current))
-                current = []
-            }
-            current.append(sample)
-        }
-
-        if !current.isEmpty {
-            result.append(QuotaHistoryChartSegment(index: result.count, samples: current))
-        }
-        return result
+        smoothedSamples.isEmpty
+            ? []
+            : [QuotaHistoryChartSegment(index: 0, samples: smoothedSamples)]
     }
 
     private var detailSample: QuotaHistorySample? {
-        hoveredSample ?? latestVisibleSample
+        hoveredSample
+            ?? samples.last(where: { !$0.isCarriedForward })
+            ?? latestVisibleSample
     }
 
     private var latestVisibleSample: QuotaHistorySample? {
@@ -338,9 +331,15 @@ private struct QuotaHistoryChartCard: View {
                             y: .value("Remaining", remaining),
                             series: .value("Segment", segment.index)
                         )
-                        .interpolationMethod(.stepEnd)
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(provider.historyTint)
-                        .lineStyle(StrokeStyle(lineWidth: 2))
+                        .lineStyle(
+                            StrokeStyle(
+                                lineWidth: 2.25,
+                                lineCap: .round,
+                                lineJoin: .round
+                            )
+                        )
                     }
                 }
             }
@@ -430,7 +429,7 @@ private struct QuotaHistoryChartCard: View {
     private var sampleDetail: some View {
         if let sample = detailSample {
             HStack(spacing: 10) {
-                Text(sample.sampledAt.formatted(date: .abbreviated, time: .shortened))
+                Text(sample.recordedAt.formatted(date: .abbreviated, time: .shortened))
                     .foregroundStyle(.secondary)
 
                 Spacer(minLength: 8)
@@ -474,6 +473,34 @@ private struct QuotaHistoryChartSegment: Identifiable {
     let samples: [QuotaHistorySample]
 
     var id: Int { index }
+}
+
+enum QuotaHistoryChartSmoother {
+    static let missingDataThreshold: TimeInterval = 40 * 60
+    static let maximumTransitionDuration: TimeInterval = 5 * 60
+
+    static func samples(from samples: [QuotaHistorySample]) -> [QuotaHistorySample] {
+        guard samples.count > 1 else { return samples }
+
+        var result = [samples[0]]
+        result.reserveCapacity(samples.count * 2)
+
+        for sample in samples.dropFirst() {
+            guard let previous = result.last else { continue }
+            let gap = sample.sampledAt.timeIntervalSince(previous.sampledAt)
+
+            if gap > missingDataThreshold,
+               previous.usedBasisPoints != sample.usedBasisPoints {
+                let transitionDuration = min(maximumTransitionDuration, gap * 0.1)
+                let transitionStart = sample.sampledAt.addingTimeInterval(-transitionDuration)
+                result.append(previous.carryingForward(to: transitionStart))
+            }
+
+            result.append(sample)
+        }
+
+        return result
+    }
 }
 
 private extension AgentProviderKind {

@@ -573,7 +573,77 @@ func quotaHistoryRangeUsesPrecedingSampleForResetContext() async throws {
     let manager = QuotaHistoryManager(store: fixture.store, userDefaults: defaults)
 
     let samples = try await manager.samples(for: window.id, range: .day, now: now)
-    #expect(samples.map(\.eventKind) == [.reset, .changed])
+    #expect(samples.map(\.eventKind) == [.interval, .reset, .changed, .interval])
+    #expect(samples.map(\.isCarriedForward) == [true, false, false, true])
+    #expect(samples.first?.sampledAt == rangeStart)
+    #expect(samples.last?.sampledAt == now)
+}
+
+@Test
+@MainActor
+func quotaHistoryCarriesPreviousValueAcrossEmptyRange() async throws {
+    let fixture = try HistoryStoreFixture(name: #function)
+    defer { fixture.cleanup() }
+    let account = fixture.account(provider: .codex, name: "carry-forward")
+    let now = Date(timeIntervalSince1970: 1_800_800_000)
+    let rangeStart = try #require(QuotaHistoryRange.hour.startDate(relativeTo: now))
+    let recordedAt = rangeStart.addingTimeInterval(-30 * 60)
+
+    _ = try await fixture.store.record(
+        account: account,
+        snapshot: historySnapshot(
+            provider: .codex,
+            usedPercent: 37,
+            updatedAt: recordedAt
+        ),
+        sampledAt: recordedAt
+    )
+
+    let historyAccount = try #require(await fixture.store.accounts().first)
+    let window = try #require(await fixture.store.windows(for: historyAccount.accountKey).first)
+    let suiteName = "AgentBarHistoryTests.\(#function).\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let manager = QuotaHistoryManager(store: fixture.store, userDefaults: defaults)
+
+    let samples = try await manager.samples(for: window.id, range: .hour, now: now)
+    #expect(samples.map(\.sampledAt) == [rangeStart, now])
+    #expect(samples.map(\.recordedAt) == [recordedAt, recordedAt])
+    #expect(samples.map(\.remainingPercent) == [63, 63])
+    #expect(samples.allSatisfy { $0.isCarriedForward })
+}
+
+@Test
+func quotaHistoryChartSmoothingPreservesLongMissingIntervals() {
+    let start = Date(timeIntervalSince1970: 1_800_900_000)
+    let end = start.addingTimeInterval(2 * 60 * 60)
+    let samples = [
+        historySample(at: start, usedBasisPoints: 2_000, resetsAt: nil, eventKind: .initial),
+        historySample(at: end, usedBasisPoints: 4_000, resetsAt: nil, eventKind: .changed),
+    ]
+
+    let smoothed = QuotaHistoryChartSmoother.samples(from: samples)
+    #expect(smoothed.count == 3)
+    #expect(smoothed[1].isCarriedForward)
+    #expect(smoothed[1].usedBasisPoints == 2_000)
+    #expect(smoothed[1].sampledAt == end.addingTimeInterval(-5 * 60))
+    #expect(smoothed[2].usedBasisPoints == 4_000)
+}
+
+@Test
+func quotaHistoryChartSmoothingUsesNormalSamplesDirectly() {
+    let start = Date(timeIntervalSince1970: 1_801_000_000)
+    let samples = [
+        historySample(at: start, usedBasisPoints: 2_000, resetsAt: nil, eventKind: .initial),
+        historySample(
+            at: start.addingTimeInterval(15 * 60),
+            usedBasisPoints: 2_500,
+            resetsAt: nil,
+            eventKind: .changed
+        ),
+    ]
+
+    #expect(QuotaHistoryChartSmoother.samples(from: samples) == samples)
 }
 
 @Test

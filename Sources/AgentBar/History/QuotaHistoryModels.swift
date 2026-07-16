@@ -96,6 +96,29 @@ struct QuotaHistorySample: Identifiable, Equatable, Sendable {
     let resetsAt: Date?
     let isUnlimited: Bool
     let eventKind: QuotaHistoryEventKind
+    let carriedFromSampledAt: Date?
+
+    init(
+        windowID: Int64,
+        sampledAt: Date,
+        usedBasisPoints: Int?,
+        usedLabel: String?,
+        remainingLabel: String?,
+        resetsAt: Date?,
+        isUnlimited: Bool,
+        eventKind: QuotaHistoryEventKind,
+        carriedFromSampledAt: Date? = nil
+    ) {
+        self.windowID = windowID
+        self.sampledAt = sampledAt
+        self.usedBasisPoints = usedBasisPoints
+        self.usedLabel = usedLabel
+        self.remainingLabel = remainingLabel
+        self.resetsAt = resetsAt
+        self.isUnlimited = isUnlimited
+        self.eventKind = eventKind
+        self.carriedFromSampledAt = carriedFromSampledAt
+    }
 
     var id: String {
         "\(windowID)-\(Int64((sampledAt.timeIntervalSince1970 * 1_000).rounded()))"
@@ -109,6 +132,14 @@ struct QuotaHistorySample: Identifiable, Equatable, Sendable {
         usedPercent.map { max(0, 100 - $0) }
     }
 
+    var recordedAt: Date {
+        carriedFromSampledAt ?? sampledAt
+    }
+
+    var isCarriedForward: Bool {
+        carriedFromSampledAt != nil
+    }
+
     func replacingEventKind(_ eventKind: QuotaHistoryEventKind) -> QuotaHistorySample {
         QuotaHistorySample(
             windowID: windowID,
@@ -118,7 +149,22 @@ struct QuotaHistorySample: Identifiable, Equatable, Sendable {
             remainingLabel: remainingLabel,
             resetsAt: resetsAt,
             isUnlimited: isUnlimited,
-            eventKind: eventKind
+            eventKind: eventKind,
+            carriedFromSampledAt: carriedFromSampledAt
+        )
+    }
+
+    func carryingForward(to date: Date) -> QuotaHistorySample {
+        QuotaHistorySample(
+            windowID: windowID,
+            sampledAt: date,
+            usedBasisPoints: usedBasisPoints,
+            usedLabel: usedLabel,
+            remainingLabel: remainingLabel,
+            resetsAt: resetsAt,
+            isUnlimited: isUnlimited,
+            eventKind: .interval,
+            carriedFromSampledAt: recordedAt
         )
     }
 }
@@ -456,5 +502,30 @@ enum QuotaHistoryDownsampler {
         return selected
             .sorted { $0.sampledAt < $1.sampledAt }
             .filter { seen.insert($0.id).inserted }
+    }
+}
+
+enum QuotaHistoryCarryForward {
+    static func extend(
+        _ samples: [QuotaHistorySample],
+        precedingSample: QuotaHistorySample?,
+        startingAt startDate: Date?,
+        endingAt endDate: Date
+    ) -> [QuotaHistorySample] {
+        var result = samples.sorted { $0.sampledAt < $1.sampledAt }
+
+        if let startDate,
+           let precedingSample,
+           result.first.map({ $0.sampledAt > startDate }) ?? true {
+            result.insert(precedingSample.carryingForward(to: startDate), at: 0)
+        }
+
+        guard let lastKnownSample = result.last ?? precedingSample,
+              lastKnownSample.sampledAt < endDate else {
+            return result
+        }
+
+        result.append(lastKnownSample.carryingForward(to: endDate))
+        return result
     }
 }
