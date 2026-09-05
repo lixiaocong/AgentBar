@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -279,11 +280,18 @@ public sealed class PopoverWindow : Window
     {
         var snapshot = SummarySnapshot(statuses);
         var error = snapshot is null ? statuses.Select(status => status.ErrorMessage).FirstOrDefault(error => error is not null) : null;
+        var loadedSnapshots = statuses
+            .Select(status => status.Snapshot)
+            .OfType<AgentQuotaSnapshot>()
+            .ToArray();
+        IReadOnlyList<AgentQuotaMetricAggregate> quotaAggregates = loadedSnapshots.Length == statuses.Count
+            ? AgentQuotaMetricAggregation.CompleteAggregates(loadedSnapshots)
+            : [];
         var column = new StackPanel
         {
             Width = ProviderColumnWidth
         };
-        column.Children.Add(ProviderHeader(provider, statuses.Count, snapshot, error));
+        column.Children.Add(ProviderHeader(provider, statuses.Count, snapshot, error, quotaAggregates));
 
         if (statuses.Count == 0)
         {
@@ -303,10 +311,11 @@ public sealed class PopoverWindow : Window
         AgentProviderKind provider,
         int accountCount,
         AgentQuotaSnapshot? snapshot,
-        string? error)
+        string? error,
+        IReadOnlyList<AgentQuotaMetricAggregate> quotaAggregates)
     {
         var style = ProviderHeaderStyle(provider);
-        var tint = PanelTint(snapshot?.HighlightMetric, error, style.Tint);
+        var tint = ProviderPanelTint(quotaAggregates, snapshot?.HighlightMetric, error, style.Tint);
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -322,9 +331,26 @@ public sealed class PopoverWindow : Window
             Orientation = System.Windows.Controls.Orientation.Vertical,
             HorizontalAlignment = System.Windows.HorizontalAlignment.Right
         };
-        var (value, label) = SnapshotStatus(snapshot, error, large: true);
-        statusStack.Children.Add(Text(value, 22, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap));
-        statusStack.Children.Add(Text(label, 11, FontWeights.SemiBold, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap));
+        if (quotaAggregates.Count > 0)
+        {
+            statusStack.Children.Add(Text(
+                "TOTAL LEFT",
+                10,
+                FontWeights.Bold,
+                Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)),
+                TextWrapping.NoWrap));
+
+            foreach (var aggregate in quotaAggregates.Take(2))
+            {
+                statusStack.Children.Add(QuotaAggregateRow(aggregate));
+            }
+        }
+        else
+        {
+            var (value, label) = SnapshotStatus(snapshot, error, large: true);
+            statusStack.Children.Add(Text(value, 22, FontWeights.Bold, Brush(tint), TextWrapping.NoWrap));
+            statusStack.Children.Add(Text(label, 11, FontWeights.SemiBold, Brush(System.Windows.Media.Color.FromRgb(118, 122, 138)), TextWrapping.NoWrap));
+        }
         Grid.SetColumn(statusStack, 1);
         grid.Children.Add(statusStack);
 
@@ -414,14 +440,14 @@ public sealed class PopoverWindow : Window
 
     private static UIElement MetricBlock(AgentQuotaMetric metric)
     {
-        var tint = QuotaTint(metric.RemainingPercent);
+        var tint = QuotaTint(metric);
         var panel = new StackPanel
         {
             Orientation = System.Windows.Controls.Orientation.Vertical,
             Margin = new Thickness(0, 2, 0, 10)
         };
         panel.Children.Add(Text(metric.Title, 13, FontWeights.SemiBold, Brush(tint), TextWrapping.Wrap));
-        panel.Children.Add(QuotaBar(metric.RemainingPercent, tint));
+        panel.Children.Add(QuotaBar(metric, tint));
 
         var labels = new Grid { Margin = new Thickness(0, 4, 0, 0) };
         labels.ColumnDefinitions.Add(new ColumnDefinition());
@@ -441,29 +467,71 @@ public sealed class PopoverWindow : Window
         return panel;
     }
 
-    private static UIElement QuotaBar(double remainingPercent, System.Windows.Media.Color tint)
+    private static UIElement QuotaBar(AgentQuotaMetric metric, System.Windows.Media.Color tint)
+    {
+        var baseline = AgentQuotaDisplayColor.BaselineRemainingPercent(
+            metric.ResetsAt,
+            metric.WindowDuration);
+
+        return QuotaBar(
+            metric.RemainingPercent,
+            baseline,
+            tint,
+            MetricBarWidth,
+            trackHeight: 6,
+            markerHeight: 10,
+            topMargin: 6);
+    }
+
+    private static UIElement QuotaBar(
+        double remainingPercent,
+        double? baselinePercent,
+        System.Windows.Media.Color tint,
+        double barWidth,
+        double trackHeight,
+        double markerHeight,
+        double topMargin)
     {
         var progress = Math.Clamp(remainingPercent, 0, 100) / 100;
-        var width = progress <= 0 ? 0 : Math.Max(3, MetricBarWidth * progress);
+        var fillWidth = progress <= 0 ? 0 : Math.Max(3, barWidth * progress);
         var grid = new Grid
         {
-            Width = MetricBarWidth,
-            Height = 6,
-            Margin = new Thickness(0, 6, 0, 0),
+            Width = barWidth,
+            Height = markerHeight,
+            Margin = new Thickness(0, topMargin, 0, 0),
             HorizontalAlignment = System.Windows.HorizontalAlignment.Left
         };
         grid.Children.Add(new Border
         {
-            CornerRadius = new CornerRadius(3),
-            Background = Brush(System.Windows.Media.Color.FromRgb(104, 108, 122), 0.20)
+            Height = trackHeight,
+            CornerRadius = new CornerRadius(trackHeight / 2),
+            Background = Brush(System.Windows.Media.Color.FromRgb(104, 108, 122), 0.20),
+            VerticalAlignment = System.Windows.VerticalAlignment.Center
         });
         grid.Children.Add(new Border
         {
-            Width = width,
-            CornerRadius = new CornerRadius(3),
+            Width = fillWidth,
+            Height = trackHeight,
+            CornerRadius = new CornerRadius(trackHeight / 2),
             Background = Brush(tint),
-            HorizontalAlignment = System.Windows.HorizontalAlignment.Left
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+            VerticalAlignment = System.Windows.VerticalAlignment.Center
         });
+
+        if (baselinePercent is { } baseline)
+        {
+            var markerX = Math.Clamp(barWidth * baseline / 100, 1, barWidth - 1);
+            grid.Children.Add(new Border
+            {
+                Width = 2,
+                Height = markerHeight,
+                CornerRadius = new CornerRadius(1),
+                Background = Brush(System.Windows.Media.Color.FromRgb(47, 50, 66), 0.82),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+                Margin = new Thickness(markerX - 1, 0, 0, 0)
+            });
+        }
+
         return grid;
     }
 
@@ -562,6 +630,91 @@ public sealed class PopoverWindow : Window
             .FirstOrDefault();
     }
 
+    private static UIElement QuotaAggregateRow(AgentQuotaMetricAggregate aggregate)
+    {
+        var row = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Vertical,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Width = 126,
+            ToolTip = QuotaAggregateHelpText(aggregate)
+        };
+        var labels = new Grid();
+        labels.ColumnDefinitions.Add(new ColumnDefinition());
+        labels.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var title = Text(
+            CompactQuotaAggregateTitle(aggregate.Title),
+            12,
+            FontWeights.SemiBold,
+            Brush(System.Windows.Media.Color.FromRgb(51, 55, 71)),
+            TextWrapping.NoWrap,
+            trim: true);
+        title.Margin = new Thickness(0, 0, 6, 0);
+        labels.Children.Add(title);
+        var value = Text(
+            aggregate.DisplayValue,
+            12,
+            FontWeights.Bold,
+            Brush(QuotaTint(aggregate)),
+            TextWrapping.NoWrap);
+        Grid.SetColumn(value, 1);
+        labels.Children.Add(value);
+        var baseline = AggregateBaselineRemainingPercent(aggregate);
+        row.Children.Add(labels);
+        row.Children.Add(QuotaBar(
+            aggregate.IsUnlimited ? 100 : aggregate.RemainingPercent,
+            baseline,
+            QuotaTint(aggregate),
+            barWidth: 126,
+            trackHeight: 4,
+            markerHeight: 7,
+            topMargin: 3));
+        return row;
+    }
+
+    private static string CompactQuotaAggregateTitle(string title)
+    {
+        var compact = title.Trim();
+        var replacements = new (string Pattern, string Replacement)[]
+        {
+            (@"(?i)\b(\d+)\s+minutes?\s+window\b", "$1m"),
+            (@"(?i)\b(\d+)\s+hours?\s+window\b", "$1h"),
+            (@"(?i)\b(\d+)\s+days?\s+window\b", "$1d"),
+            (@"(?i)\b(\d+)\s+weeks?\s+window\b", "$1w"),
+            (@"(?i)\b(\d+)\s+months?\s+window\b", "$1mo")
+        };
+
+        foreach (var (pattern, replacement) in replacements)
+        {
+            compact = Regex.Replace(compact, pattern, replacement);
+        }
+
+        return compact;
+    }
+
+    private static string QuotaAggregateHelpText(AgentQuotaMetricAggregate aggregate)
+    {
+        if (aggregate.IsUnlimited)
+        {
+            return $"{aggregate.Title}: unlimited across {aggregate.AccountCount} accounts.";
+        }
+
+        var baseline = AggregateBaselineRemainingPercent(aggregate) is { } baselinePercent
+            ? $" Current baseline {Math.Round(baselinePercent):0}%."
+            : string.Empty;
+        var reset = aggregate.ResetsAt is { } resetsAt
+            ? $" Earliest reset {RelativeTime(resetsAt)}."
+            : string.Empty;
+        return $"{aggregate.Title}: {aggregate.DisplayValue} average remaining across {aggregate.AccountCount} accounts.{baseline}{reset}";
+    }
+
+    private static double? AggregateBaselineRemainingPercent(AgentQuotaMetricAggregate aggregate) =>
+        aggregate.IsUnlimited
+            ? null
+            : AgentQuotaDisplayColor.BaselineRemainingPercent(
+                aggregate.ResetsAt,
+                aggregate.WindowDuration);
+
     private static (string Value, string Label) SnapshotStatus(AgentQuotaSnapshot? snapshot, string? error, bool large)
     {
         if (snapshot?.HighlightMetric is { } metric)
@@ -598,12 +751,61 @@ public sealed class PopoverWindow : Window
             return System.Windows.Media.Color.FromRgb(211, 61, 61);
         }
 
-        return metric is null ? fallback : QuotaTint(metric.RemainingPercent);
+        return metric is null ? fallback : QuotaTint(metric);
     }
 
-    private static System.Windows.Media.Color QuotaTint(double remainingPercent)
+    private static System.Windows.Media.Color ProviderPanelTint(
+        IReadOnlyList<AgentQuotaMetricAggregate> aggregates,
+        AgentQuotaMetric? metric,
+        string? error,
+        System.Windows.Media.Color fallback)
     {
-        var rgb = AgentQuotaDisplayColor.ForRemainingPercent(remainingPercent);
+        if (error is not null)
+        {
+            return System.Windows.Media.Color.FromRgb(211, 61, 61);
+        }
+
+        if (aggregates.Count == 0)
+        {
+            return PanelTint(metric, null, fallback);
+        }
+
+        var now = DateTimeOffset.Now;
+        var worstState = AgentQuotaDisplayState.Healthy;
+        foreach (var aggregate in aggregates.Take(2))
+        {
+            var state = aggregate.IsUnlimited
+                ? AgentQuotaDisplayState.Healthy
+                : AgentQuotaDisplayColor.StateFor(
+                    aggregate.RemainingPercent,
+                    aggregate.ResetsAt,
+                    aggregate.WindowDuration,
+                    now);
+            if ((int)state > (int)worstState)
+            {
+                worstState = state;
+            }
+        }
+
+        return QuotaTint(worstState);
+    }
+
+    private static System.Windows.Media.Color QuotaTint(AgentQuotaMetric metric) =>
+        QuotaTint(AgentQuotaDisplayColor.ForMetric(metric));
+
+    private static System.Windows.Media.Color QuotaTint(AgentQuotaMetricAggregate aggregate) =>
+        aggregate.IsUnlimited
+            ? QuotaTint(AgentQuotaDisplayState.Healthy)
+            : QuotaTint(AgentQuotaDisplayColor.For(
+                aggregate.RemainingPercent,
+                aggregate.ResetsAt,
+                aggregate.WindowDuration));
+
+    private static System.Windows.Media.Color QuotaTint(AgentQuotaDisplayState state) =>
+        QuotaTint(AgentQuotaDisplayColor.ForState(state));
+
+    private static System.Windows.Media.Color QuotaTint(AgentQuotaDisplayRgb rgb)
+    {
         return System.Windows.Media.Color.FromRgb(
             ToByte(rgb.Red),
             ToByte(rgb.Green),

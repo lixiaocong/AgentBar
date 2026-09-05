@@ -78,6 +78,39 @@ public sealed class StorageAndInfrastructureTests : IDisposable
     }
 
     [Fact]
+    public async Task RemovingAccountKeepsStoredAuthenticationSession()
+    {
+        var settingsStore = new JsonSettingsStore(_paths);
+        var authStore = new InMemoryAuthSessionStore();
+        var coordinator = new RefreshCoordinator(
+            settingsStore,
+            authStore,
+            new AgentQuotaServiceFactory(authStore),
+            _paths);
+        var session = new StoredAuthSession(
+            AgentProviderKind.Codex,
+            "remove-account",
+            "dev@example.com",
+            "access",
+            "refresh",
+            "id-token",
+            null,
+            ["scope"],
+            DateTimeOffset.UtcNow);
+
+        await coordinator.AddStoredAccountAsync(session);
+        var configuredAccount = Assert.Single(coordinator.Settings.Accounts);
+
+        await coordinator.RemoveAccountAsync(configuredAccount.Id);
+
+        Assert.Empty(coordinator.Settings.Accounts);
+        Assert.Empty(coordinator.Settings.MenuBarAccountIds);
+        Assert.Equal(
+            session,
+            await authStore.LoadAsync(AgentProviderKind.Codex, session.LocalAccountId));
+    }
+
+    [Fact]
     public void CallbackParserExtractsCodeStateAndError()
     {
         var callback = TcpLocalCallbackServer.ParseCallback(

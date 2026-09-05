@@ -416,15 +416,98 @@ public sealed class ProviderDecodeTests
     }
 
     [Fact]
-    public void ClaudeDecodeMatchesSharedFixture()
+    public void ClaudeUsageDecodeMatchesSharedFixture()
     {
         var account = Account with { Provider = AgentProviderKind.Claude };
-        var service = new ClaudeQuotaService(account);
-        var snapshot = service.DecodeSnapshot(
-            Fixture.Bytes("claude", "subscription-auth.json"),
+        var service = new ClaudeQuotaService(account, new InMemoryAuthSessionStore());
+        var snapshot = service.DecodeUsageSnapshot(
+            Fixture.Bytes("claude", "usage.json"),
+            "dev@example.com",
+            "Claude Max",
             DateTimeOffset.FromUnixTimeSeconds(1_744_160_000));
 
-        Fixture.AssertSnapshotMatches(snapshot, "expected", "claude-subscription.json");
+        Fixture.AssertSnapshotMatches(snapshot, "expected", "claude-usage.json");
+        Assert.Equal(
+            DateTimeOffset.FromUnixTimeSeconds(1_785_348_000),
+            snapshot.Metrics[0].ResetsAt);
+    }
+
+    [Fact]
+    public void ClaudeUsageAcceptsWindowsAddedByAnthropicLater()
+    {
+        var payload = """
+        {
+          "five_hour": { "utilization": 10, "resets_at": "2026-07-29T18:00:00Z" },
+          "thirty_day_haiku": { "utilization": 55 },
+          "notes": "unrelated",
+          "rate_limit_tier": 3
+        }
+        """u8.ToArray();
+
+        var windows = ClaudeUsageWindows.Parse(payload);
+
+        Assert.Collection(
+            windows,
+            window => Assert.Equal("five_hour", window.Key),
+            window =>
+            {
+                Assert.Equal("thirty_day_haiku", window.Key);
+                Assert.Null(window.ResetsAt);
+                Assert.Equal("Thirty Day Haiku", ClaudeUsageWindows.Title(window.Key));
+            });
+    }
+
+    [Fact]
+    public void ClaudeProfileDecodesNestedAccountAndPlan()
+    {
+        var payload = """
+        {
+          "account": {
+            "uuid": "acc-123",
+            "email_address": "dev@example.com",
+            "display_name": "Dev"
+          },
+          "organization": { "name": "Example Inc" },
+          "subscription_type": "claude_max"
+        }
+        """u8.ToArray();
+
+        var profile = ClaudeProfile.Parse(payload);
+
+        Assert.Equal("acc-123", profile.AccountId);
+        Assert.Equal("dev@example.com", profile.AccountLabel);
+        Assert.Equal("Claude Max", profile.PlanLabel);
+    }
+
+    [Fact]
+    public void ClaudeAuthorizeUriCarriesPkceAndState()
+    {
+        var service = new ClaudeBrowserLoginService(
+            new InMemoryAuthSessionStore(),
+            new FakeBrowserLauncher(),
+            new FixedCallbackServer(new OAuthCallback(null, null, null, 0)));
+
+        var uri = service.BuildAuthorizeUri(
+            "http://localhost:54546/callback",
+            "challenge-value",
+            "state-value");
+
+        var query = uri.Query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(pair => pair.Split('=', 2))
+            .ToDictionary(
+                parts => Uri.UnescapeDataString(parts[0]),
+                parts => parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : "");
+
+        Assert.Equal("platform.claude.com", uri.Host);
+        Assert.Equal("/oauth/authorize", uri.AbsolutePath);
+        Assert.Equal("code", query["response_type"]);
+        Assert.Equal(ClaudeQuotaService.ClientId, query["client_id"]);
+        Assert.Equal("http://localhost:54546/callback", query["redirect_uri"]);
+        Assert.Equal("challenge-value", query["code_challenge"]);
+        Assert.Equal("S256", query["code_challenge_method"]);
+        Assert.Equal("state-value", query["state"]);
+        Assert.Equal("user:profile user:inference", query["scope"]);
     }
 
     [Fact]

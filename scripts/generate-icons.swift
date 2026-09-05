@@ -27,11 +27,15 @@ let specs = [
 let fileManager = FileManager.default
 let projectURL = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
 let resourcesURL = projectURL.appendingPathComponent("Resources", isDirectory: true)
-let iconsetURL = resourcesURL.appendingPathComponent("AppIcon.iconset", isDirectory: true)
+let iconsetURL = fileManager.temporaryDirectory
+    .appendingPathComponent("AgentBar-AppIcon-\(UUID().uuidString).iconset", isDirectory: true)
 let assetCatalogURL = resourcesURL.appendingPathComponent("AppIcon.xcassets", isDirectory: true)
 let appIconSetURL = assetCatalogURL.appendingPathComponent("AppIcon.appiconset", isDirectory: true)
 let icnsURL = resourcesURL.appendingPathComponent("AppIcon.icns")
-let previewURL = resourcesURL.appendingPathComponent("AppIcon-preview.png")
+
+defer {
+    try? fileManager.removeItem(at: iconsetURL)
+}
 
 try fileManager.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
 if fileManager.fileExists(atPath: iconsetURL.path) {
@@ -49,10 +53,6 @@ for spec in specs {
     }
     try data.write(to: iconsetURL.appendingPathComponent(spec.fileName))
     try data.write(to: appIconSetURL.appendingPathComponent(spec.fileName))
-
-    if spec.size == 1024 {
-        try data.write(to: previewURL)
-    }
 }
 
 try appIconContentsJSON().write(

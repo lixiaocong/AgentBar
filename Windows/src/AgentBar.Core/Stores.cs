@@ -24,10 +24,6 @@ public static class AgentBarPaths
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "AgentBar"));
 
-    public static string ClaudeDefaultDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".claude");
-
     public static IEnumerable<string> DefaultJetBrainsQuotaCacheFiles()
     {
         var root = Path.Combine(

@@ -35,7 +35,8 @@ public partial class App : System.Windows.Application
             new TrayIconRenderer(),
             new CodexBrowserLoginService(authStore, browser, callbackServer),
             new GitHubCopilotBrowserLoginService(authStore, browser),
-            new GeminiBrowserLoginService(authStore, browser, callbackServer));
+            new GeminiBrowserLoginService(authStore, browser, callbackServer),
+            new ClaudeBrowserLoginService(authStore, browser, callbackServer));
 
         await _coordinator.InitializeAsync();
         _trayController.Show();

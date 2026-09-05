@@ -369,7 +369,7 @@ struct AgentBarDesktopWidgetView: View {
                     .layoutPriority(3)
             }
 
-            quotaBar(value: metric.remainingPercent, tint: tint)
+            quotaBar(metric: metric, tint: tint)
 
             HStack(spacing: 8) {
                 Text(metric.usedLabel)
@@ -409,20 +409,37 @@ struct AgentBarDesktopWidgetView: View {
         count == 1 ? "1 reset" : "\(count) resets"
     }
 
-    private func quotaBar(value: Double, tint: Color) -> some View {
-        let progress = min(max(value, 0), 100) / 100
+    private func quotaBar(metric: AgentQuotaMetric, tint: Color) -> some View {
+        let progress = min(max(metric.remainingPercent, 0), 100) / 100
+        let baseline = AgentQuotaDisplayColor.baselineRemainingPercent(
+            resetsAt: metric.resetsAt,
+            windowDuration: metric.windowDuration
+        ).map { min(max($0, 0), 100) / 100 }
 
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(palette.track)
+                    .frame(height: 5)
 
                 Capsule()
                     .fill(tint)
                     .frame(width: max(3, proxy.size.width * progress))
+                    .frame(height: 5)
+
+                if let baseline {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(palette.primaryText.opacity(0.78))
+                        .frame(width: 2, height: 8)
+                        .position(
+                            x: min(max(1, proxy.size.width * baseline), max(1, proxy.size.width - 1)),
+                            y: proxy.size.height / 2
+                        )
+                        .accessibilityHidden(true)
+                }
             }
         }
-        .frame(height: 5)
+        .frame(height: 8)
     }
 
     private func detailPill(label: String, value: String) -> some View {
@@ -529,7 +546,7 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
-        quotaTint(for: metric.remainingPercent)
+        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: metric))
     }
 
     private func compactRemainingLabel(_ label: String) -> String {
@@ -546,10 +563,6 @@ struct AgentBarDesktopWidgetView: View {
         }
 
         return normalized
-    }
-
-    private func quotaTint(for remainingPercent: Double) -> Color {
-        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
     }
 
     private func providerIconBadge(_ style: WidgetProviderStyle) -> some View {

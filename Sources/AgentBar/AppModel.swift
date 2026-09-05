@@ -11,6 +11,26 @@ import AgentBarCore
 import WidgetKit
 #endif
 
+typealias BrowserLoginProgressHandler = @MainActor @Sendable (String?) -> Void
+typealias BrowserLoginAuthorizationURLHandler = @MainActor @Sendable (URL) -> Void
+typealias BrowserLoginURLCopyAction = @MainActor @Sendable (URL) -> Bool
+
+struct BrowserLoginProgressReporter: Sendable {
+    let report: BrowserLoginProgressHandler
+    let reportAuthorizationURL: BrowserLoginAuthorizationURLHandler
+}
+
+typealias CodexBrowserLoginAction = @MainActor @Sendable (
+    Bool,
+    BrowserLoginProgressReporter
+) async throws -> CodexStoredAuthSession
+typealias ProviderBrowserLoginAction = @MainActor @Sendable (
+    AgentProviderKind,
+    Bool,
+    Bool,
+    BrowserLoginProgressReporter
+) async throws -> AgentProviderStoredAuthSession
+
 @MainActor
 @Observable
 final class AppModel {
@@ -31,7 +51,15 @@ final class AppModel {
     private let userDefaults: UserDefaults
     private let quotaHistoryRecorder: any QuotaHistoryRecording
     private let providerAvailabilityOverride: (@Sendable () -> AgentProviderAvailability)?
+    private let codexBrowserLoginAction: CodexBrowserLoginAction
+    private let providerBrowserLoginAction: ProviderBrowserLoginAction
+    private let browserLoginURLCopyAction: BrowserLoginURLCopyAction
+    private let browserLoginTimeout: Duration
     private var refreshTask: Task<Void, Never>?
+    private var browserLoginTasks: [AgentProviderKind: Task<Void, Never>] = [:]
+    private var browserLoginTimeoutTasks: [AgentProviderKind: Task<Void, Never>] = [:]
+    private var browserLoginAttemptIDs: [AgentProviderKind: UUID] = [:]
+    private var browserLoginURLs: [AgentProviderKind: URL] = [:]
     private var hasStarted = false
     private var needsRefreshAfterCurrentRun = false
     private var configuredDirectoriesByProvider: [AgentProviderKind: [ConfiguredAccountDirectory]]
@@ -147,11 +175,50 @@ final class AppModel {
         userDefaults: UserDefaults = .standard,
         providerAvailabilityResolver: (@Sendable () -> AgentProviderAvailability)? = nil,
         historyRecorder: (any QuotaHistoryRecording)? = nil,
+        codexBrowserLoginAction: @escaping CodexBrowserLoginAction = { openBrowser, progress in
+            try await CodexBrowserLoginService().signIn(
+                openBrowser: openBrowser,
+                authorizationURL: progress.reportAuthorizationURL
+            )
+        },
+        providerBrowserLoginAction: @escaping ProviderBrowserLoginAction = { provider, forceAccountSelection, openBrowser, progress in
+            switch provider {
+            case .githubCopilot:
+                return try await GitHubCopilotBrowserLoginService().signIn(
+                    openBrowser: openBrowser,
+                    progress: progress.report,
+                    authorizationURL: progress.reportAuthorizationURL
+                )
+            case .gemini:
+                return try await GeminiBrowserLoginService().signIn(
+                    forceAccountSelection: forceAccountSelection,
+                    openBrowser: openBrowser,
+                    authorizationURL: progress.reportAuthorizationURL
+                )
+            case .claude:
+                return try await ClaudeBrowserLoginService().signIn(
+                    openBrowser: openBrowser,
+                    authorizationURL: progress.reportAuthorizationURL
+                )
+            case .codex, .zai, .junie:
+                throw CancellationError()
+            }
+        },
+        browserLoginURLCopyAction: @escaping BrowserLoginURLCopyAction = { url in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            return pasteboard.setString(url.absoluteString, forType: .string)
+        },
+        browserLoginTimeout: Duration = .seconds(5 * 60),
         startImmediately: Bool = true
     ) {
         self.userDefaults = userDefaults
         self.quotaHistoryRecorder = historyRecorder ?? QuotaHistoryManager.shared
         self.providerAvailabilityOverride = providerAvailabilityResolver
+        self.codexBrowserLoginAction = codexBrowserLoginAction
+        self.providerBrowserLoginAction = providerBrowserLoginAction
+        self.browserLoginURLCopyAction = browserLoginURLCopyAction
+        self.browserLoginTimeout = browserLoginTimeout
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
         self.accountLabelsByID = userDefaults.dictionary(forKey: Self.accountLabelsDefaultsKey) as? [String: String] ?? [:]
         self.providerAvailability = .none
@@ -237,6 +304,7 @@ final class AppModel {
             let provider = status.provider
             let index = (providerIndexes[provider] ?? 0) + 1
             providerIndexes[provider] = index
+            let metric = status.snapshot?.highlightMetric
 
             return MenuBarStatusImage.Bar(
                 provider: provider,
@@ -245,7 +313,9 @@ final class AppModel {
                     duplicateIndex: index,
                     duplicateCount: providerCounts[provider] ?? 1
                 ),
-                remainingPercent: status.snapshot?.highlightMetric?.remainingPercent,
+                remainingPercent: metric?.remainingPercent,
+                resetsAt: metric?.resetsAt,
+                windowDuration: metric?.windowDuration,
                 isError: status.errorMessage != nil
             )
         }
@@ -292,6 +362,18 @@ final class AppModel {
 
     func visibleAccountStatuses(for provider: AgentProviderKind) -> [AgentAccountStatus] {
         accountStatuses(for: provider).filter(\.shouldDisplayInMenu)
+    }
+
+    func quotaAggregates(for provider: AgentProviderKind) -> [AgentQuotaMetricAggregate] {
+        let statuses = visibleAccountStatuses(for: provider)
+        guard statuses.count > 1,
+              statuses.allSatisfy({ $0.snapshot != nil }) else {
+            return []
+        }
+
+        return AgentQuotaMetricAggregation.completeAggregates(
+            for: statuses.compactMap(\.snapshot)
+        )
     }
 
     func isHistoryAccountConfigured(_ accountKey: String) -> Bool {
@@ -381,13 +463,7 @@ final class AppModel {
         }
 
         let directory = ConfiguredAccountDirectory(path: trimmedPath)
-        if provider == .claude {
-            guard Self.hasClaudeAuthFile(in: directory) else {
-                return .credentialsFileMissing(
-                    ClaudeCLIInstallation(configDirectory: directory.url).authFile.path
-                )
-            }
-        } else if !isAppManagedAccountDirectory(directory, for: provider) {
+        guard isAppManagedAccountDirectory(directory, for: provider) else {
             return .browserLoginRequired
         }
 
@@ -529,18 +605,8 @@ final class AppModel {
     }
 
     func removeConfiguredAccount(_ account: ConfiguredAgentAccount) {
-        if account.provider == .codex,
-           let accountID = CodexAppAuthStore.accountID(fromAccountDirectory: account.directory.url) {
-            _ = try? CodexAppAuthStore.deleteSession(accountID: accountID)
-            try? CodexAppAuthStore.deleteAccountDirectory(accountID: accountID)
-        } else if let accountID = AgentProviderAppAuthStore.accountID(
-            fromAccountDirectory: account.directory.url,
-            provider: account.provider
-        ) {
-            _ = try? AgentProviderAppAuthStore.deleteSession(provider: account.provider, accountID: accountID)
-            try? AgentProviderAppAuthStore.deleteAccountDirectory(provider: account.provider, accountID: accountID)
-        }
-
+        // Removing an account is configuration-only. Keep authentication data so
+        // this action can never sign the user out of another local application.
         let updated = configuredAccounts(for: account.provider).filter { $0 != account.directory }
         clearStoredAccountState(for: [account.id])
         codexReconnectInProgressAccountIDs.remove(account.id)
@@ -602,60 +668,94 @@ final class AppModel {
         providerLoginMessages[provider]
     }
 
+    func cancelBrowserSignIn(for provider: AgentProviderKind) {
+        cancelBrowserSignIn(
+            for: provider,
+            message: "Sign-in cancelled.",
+            error: nil
+        )
+    }
+
+    func cancelAllBrowserSignIns() {
+        for provider in Array(browserLoginAttemptIDs.keys) {
+            cancelBrowserSignIn(for: provider, message: nil, error: nil)
+        }
+    }
+
+    func canCopyBrowserSignInURL(for provider: AgentProviderKind) -> Bool {
+        !isLoginInProgress(for: provider) || browserLoginURLs[provider] != nil
+    }
+
+    func copyBrowserSignInURL(
+        for provider: AgentProviderKind,
+        forceAccountSelection: Bool = false
+    ) {
+        if let url = browserLoginURLs[provider] {
+            copyBrowserLoginURL(url, for: provider)
+            return
+        }
+
+        signInWithBrowser(
+            for: provider,
+            forceAccountSelection: forceAccountSelection,
+            openBrowser: false
+        )
+    }
+
     func supportsBrowserSignIn(for provider: AgentProviderKind) -> Bool {
         switch provider {
-        case .codex, .githubCopilot, .gemini:
+        case .codex, .githubCopilot, .gemini, .claude:
             return true
-        case .claude, .zai, .junie:
+        case .zai, .junie:
             return false
         }
     }
 
-    func signInWithBrowser(for provider: AgentProviderKind, forceAccountSelection: Bool = false) {
+    func signInWithBrowser(
+        for provider: AgentProviderKind,
+        forceAccountSelection: Bool = false,
+        openBrowser: Bool = true
+    ) {
         guard supportsBrowserSignIn(for: provider) else {
             switch provider {
-            case .claude:
-                providerLoginErrors[provider] = "Claude accounts are read from Claude Code auth.json. Add a directory containing auth.json instead of browser sign-in."
             case .junie:
                 providerLoginErrors[provider] = "Junie accounts must be added with a Junie API token from AgentBar settings."
             case .zai:
                 providerLoginErrors[provider] = "Z.ai accounts must be added with a Coding Plan credential from AgentBar settings."
-            case .codex, .githubCopilot, .gemini:
+            case .codex, .githubCopilot, .gemini, .claude:
                 break
             }
             return
         }
 
         if provider == .codex {
-            signInToCodexWithBrowserImpl()
+            signInToCodexWithBrowserImpl(openBrowser: openBrowser)
             return
         }
 
-        guard !providerLoginInProgress.contains(provider) else {
+        guard let attemptID = beginBrowserLogin(for: provider) else {
             return
         }
 
-        providerLoginInProgress.insert(provider)
-        providerLoginErrors[provider] = nil
-        providerLoginMessages[provider] = nil
-
-        Task {
+        let task = Task { [weak self] in
+            guard let self else { return }
             defer {
-                providerLoginInProgress.remove(provider)
+                finishBrowserLogin(for: provider, attemptID: attemptID)
             }
 
             do {
-                let session: AgentProviderStoredAuthSession
-                switch provider {
-                case .githubCopilot:
-                    session = try await GitHubCopilotBrowserLoginService().signIn { message in
-                        self.providerLoginMessages[provider] = message
-                    }
-                case .gemini:
-                    session = try await GeminiBrowserLoginService().signIn(forceAccountSelection: forceAccountSelection)
-                case .codex, .claude, .zai, .junie:
-                    return
-                }
+                let session = try await providerBrowserLoginAction(
+                    provider,
+                    forceAccountSelection,
+                    openBrowser,
+                    browserLoginProgressReporter(
+                        for: provider,
+                        attemptID: attemptID,
+                        copyURLWhenAvailable: !openBrowser
+                    )
+                )
+                try Task.checkCancellation()
+                guard isCurrentBrowserLogin(provider, attemptID: attemptID) else { return }
 
                 try AgentProviderAppAuthStore.save(session: session)
                 try AgentProviderAppAuthStore.ensureAccountDirectoryExists(
@@ -679,9 +779,11 @@ final class AppModel {
                     providerLoginMessages[provider] = nil
                     break
                 case .duplicate:
-                    if provider == .gemini {
+                    // Signing in again with the same account has already replaced the
+                    // stored credentials, so this is a refresh rather than an error.
+                    if provider == .gemini || provider == .claude {
                         providerLoginErrors[provider] = nil
-                        providerLoginMessages[provider] = "Gemini credentials refreshed for the existing account."
+                        providerLoginMessages[provider] = "\(provider.title) credentials refreshed for the existing account."
                     } else {
                         providerLoginErrors[provider] = "That \(provider.title) account is already signed in. Choose a different account in the browser and try again."
                     }
@@ -693,26 +795,38 @@ final class AppModel {
                     providerLoginErrors[provider] = "\(provider.title) sign-in completed, but AgentBar could not find the saved credentials."
                 }
             } catch {
+                guard isCurrentBrowserLogin(provider, attemptID: attemptID),
+                      !Task.isCancelled else { return }
+                providerLoginMessages[provider] = nil
                 providerLoginErrors[provider] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
+        browserLoginTasks[provider] = task
+        scheduleBrowserLoginTimeout(for: provider, attemptID: attemptID)
     }
 
-    private func signInToCodexWithBrowserImpl() {
-        guard !isCodexLoginInProgress else {
+    private func signInToCodexWithBrowserImpl(openBrowser: Bool) {
+        guard let attemptID = beginBrowserLogin(for: .codex) else {
             return
         }
 
-        isCodexLoginInProgress = true
-        codexLoginError = nil
-
-        Task {
+        let task = Task { [weak self] in
+            guard let self else { return }
             defer {
-                isCodexLoginInProgress = false
+                finishBrowserLogin(for: .codex, attemptID: attemptID)
             }
 
             do {
-                let authSession = try await CodexBrowserLoginService().signIn()
+                let authSession = try await codexBrowserLoginAction(
+                    openBrowser,
+                    browserLoginProgressReporter(
+                        for: .codex,
+                        attemptID: attemptID,
+                        copyURLWhenAvailable: !openBrowser
+                    )
+                )
+                try Task.checkCancellation()
+                guard isCurrentBrowserLogin(.codex, attemptID: attemptID) else { return }
                 let localAccountID = CodexAppAuthStore.localAccountID(
                     for: authSession,
                     existingLocalAccountIDs: configuredCodexLocalAccountIDs()
@@ -746,6 +860,7 @@ final class AppModel {
                 switch addResult {
                 case .added:
                     codexLoginError = nil
+                    providerLoginMessages[.codex] = nil
                     break
                 case .duplicate:
                     codexLoginError = "That Codex account is already signed in. Choose a different account in the browser, or sign out of ChatGPT there and try again."
@@ -757,8 +872,155 @@ final class AppModel {
                     codexLoginError = "Codex sign-in completed, but AgentBar could not find the saved credentials."
                 }
             } catch {
+                guard isCurrentBrowserLogin(.codex, attemptID: attemptID),
+                      !Task.isCancelled else { return }
+                providerLoginMessages[.codex] = nil
                 codexLoginError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
+        }
+        browserLoginTasks[.codex] = task
+        scheduleBrowserLoginTimeout(for: .codex, attemptID: attemptID)
+    }
+
+    private func beginBrowserLogin(for provider: AgentProviderKind) -> UUID? {
+        guard browserLoginAttemptIDs[provider] == nil else { return nil }
+
+        let attemptID = UUID()
+        browserLoginAttemptIDs[provider] = attemptID
+        browserLoginURLs[provider] = nil
+        providerLoginMessages[provider] = nil
+
+        if provider == .codex {
+            isCodexLoginInProgress = true
+            codexLoginError = nil
+        } else {
+            providerLoginInProgress.insert(provider)
+            providerLoginErrors[provider] = nil
+        }
+
+        return attemptID
+    }
+
+    private func scheduleBrowserLoginTimeout(
+        for provider: AgentProviderKind,
+        attemptID: UUID
+    ) {
+        browserLoginTimeoutTasks[provider]?.cancel()
+        browserLoginTimeoutTasks[provider] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: self?.browserLoginTimeout ?? .zero)
+            } catch {
+                return
+            }
+
+            guard let self,
+                  isCurrentBrowserLogin(provider, attemptID: attemptID) else { return }
+            cancelBrowserSignIn(
+                for: provider,
+                message: nil,
+                error: "\(provider.title) sign-in timed out. Try again."
+            )
+        }
+    }
+
+    private func finishBrowserLogin(
+        for provider: AgentProviderKind,
+        attemptID: UUID
+    ) {
+        guard isCurrentBrowserLogin(provider, attemptID: attemptID) else { return }
+
+        browserLoginTasks[provider] = nil
+        browserLoginTimeoutTasks[provider]?.cancel()
+        browserLoginTimeoutTasks[provider] = nil
+        browserLoginAttemptIDs[provider] = nil
+        browserLoginURLs[provider] = nil
+        setBrowserLoginInProgress(false, for: provider)
+    }
+
+    private func cancelBrowserSignIn(
+        for provider: AgentProviderKind,
+        message: String?,
+        error: String?
+    ) {
+        guard browserLoginAttemptIDs.removeValue(forKey: provider) != nil else { return }
+
+        let loginTask = browserLoginTasks.removeValue(forKey: provider)
+        browserLoginTimeoutTasks.removeValue(forKey: provider)?.cancel()
+        browserLoginURLs[provider] = nil
+        setBrowserLoginInProgress(false, for: provider)
+        providerLoginMessages[provider] = message
+        setBrowserLoginError(error, for: provider)
+        loginTask?.cancel()
+    }
+
+    private func browserLoginProgressReporter(
+        for provider: AgentProviderKind,
+        attemptID: UUID,
+        copyURLWhenAvailable: Bool
+    ) -> BrowserLoginProgressReporter {
+        BrowserLoginProgressReporter(
+            report: { [weak self] message in
+                guard let self,
+                      isCurrentBrowserLogin(provider, attemptID: attemptID) else { return }
+                providerLoginMessages[provider] = message
+            },
+            reportAuthorizationURL: { [weak self] url in
+                guard let self,
+                      isCurrentBrowserLogin(provider, attemptID: attemptID) else { return }
+                browserLoginURLs[provider] = url
+                if copyURLWhenAvailable {
+                    copyBrowserLoginURL(url, for: provider)
+                }
+            }
+        )
+    }
+
+    private func copyBrowserLoginURL(_ url: URL, for provider: AgentProviderKind) {
+        guard browserLoginURLCopyAction(url) else {
+            setBrowserLoginError("AgentBar could not copy the sign-in URL.", for: provider)
+            return
+        }
+
+        let confirmation = "Sign-in URL copied. Complete sign-in in your preferred browser."
+        if let currentMessage = providerLoginMessages[provider],
+           !currentMessage.isEmpty {
+            if !currentMessage.contains(confirmation) {
+                providerLoginMessages[provider] = "\(currentMessage)\n\(confirmation)"
+            }
+        } else {
+            providerLoginMessages[provider] = confirmation
+        }
+        setBrowserLoginError(nil, for: provider)
+    }
+
+    private func isCurrentBrowserLogin(
+        _ provider: AgentProviderKind,
+        attemptID: UUID
+    ) -> Bool {
+        browserLoginAttemptIDs[provider] == attemptID
+    }
+
+    private func setBrowserLoginInProgress(
+        _ isInProgress: Bool,
+        for provider: AgentProviderKind
+    ) {
+        if provider == .codex {
+            isCodexLoginInProgress = isInProgress
+        } else if isInProgress {
+            providerLoginInProgress.insert(provider)
+        } else {
+            providerLoginInProgress.remove(provider)
+        }
+    }
+
+    private func setBrowserLoginError(
+        _ error: String?,
+        for provider: AgentProviderKind
+    ) {
+        if provider == .codex {
+            codexLoginError = error
+        } else {
+            providerLoginErrors[provider] = error
         }
     }
 
@@ -1087,7 +1349,7 @@ final class AppModel {
     }
 
     private func removeInvalidGeminiAccount(_ account: ConfiguredAgentAccount) {
-        let message = "Stored Gemini login expired and was removed locally. Sign in again from AgentBar settings."
+        let message = "The Gemini account was removed from AgentBar because its stored login expired. Sign in again from AgentBar settings."
         setAccountState(snapshot: nil, error: message, for: account)
         providerLoginMessages[.gemini] = nil
         providerLoginErrors[.gemini] = message
@@ -1361,26 +1623,15 @@ final class AppModel {
         from userDefaults: UserDefaults
     ) -> [ConfiguredAccountDirectory] {
         let key = configuredAccountDirectoriesDefaultsKey(for: provider)
-        if provider == .claude {
-            let paths = userDefaults.stringArray(forKey: key) ?? [provider.defaultAccountDirectory.path]
-            return ConfiguredAccountDirectory
-                .unique(paths: paths)
-                .filter(hasClaudeAuthFile)
-        }
-
         if provider == .codex {
             return ConfiguredAccountDirectory
                 .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
                 .filter(CodexAppAuthStore.isAppManagedAccountDirectory)
         }
 
-        if provider == .githubCopilot || provider == .gemini || provider == .zai || provider == .junie {
-            return ConfiguredAccountDirectory
-                .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
-                .filter { AgentProviderAppAuthStore.isAppManagedAccountDirectory($0, provider: provider) }
-        }
-
-        return ConfiguredAccountDirectory.unique(paths: userDefaults.stringArray(forKey: key) ?? [])
+        return ConfiguredAccountDirectory
+            .unique(paths: userDefaults.stringArray(forKey: key) ?? [])
+            .filter { AgentProviderAppAuthStore.isAppManagedAccountDirectory($0, provider: provider) }
     }
 
     private func isAppManagedAccountDirectory(
@@ -1391,17 +1642,7 @@ final class AppModel {
             return CodexAppAuthStore.isAppManagedAccountDirectory(directory)
         }
 
-        if provider == .claude {
-            return Self.hasClaudeAuthFile(in: directory)
-        }
-
         return AgentProviderAppAuthStore.isAppManagedAccountDirectory(directory, provider: provider)
-    }
-
-    private static func hasClaudeAuthFile(in directory: ConfiguredAccountDirectory) -> Bool {
-        ClaudeQuotaService(
-            installation: ClaudeCLIInstallation(configDirectory: directory.url)
-        ).isAvailable
     }
 
     private static func configuredAccountDirectoriesDefaultsKey(

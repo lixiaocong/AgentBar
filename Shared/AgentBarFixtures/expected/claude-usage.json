@@ -1,0 +1,29 @@
+{
+  "provider": "claude",
+  "accountLabel": "dev@example.com",
+  "planType": "Claude Max",
+  "sourceSummary": "Claude usage API",
+  "metrics": [
+    {
+      "id": "claude-five_hour",
+      "title": "Session (5h)",
+      "usedPercent": 42.5,
+      "usedLabel": "43% used",
+      "remainingLabel": "58% left"
+    },
+    {
+      "id": "claude-seven_day",
+      "title": "Weekly (all models)",
+      "usedPercent": 18,
+      "usedLabel": "18% used",
+      "remainingLabel": "82% left"
+    },
+    {
+      "id": "claude-seven_day_opus",
+      "title": "Weekly (Opus)",
+      "usedPercent": 7.25,
+      "usedLabel": "7% used",
+      "remainingLabel": "93% left"
+    }
+  ]
+}

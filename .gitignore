@@ -7,6 +7,12 @@ build/*.app
 .xcodebuild/
 AgentBar.xcodeproj/
 
+# Generated app icon output
+Resources/AppIcon.icns
+Resources/AppIcon.iconset/
+Resources/AppIcon.xcassets/
+Resources/AppIcon-preview.png
+
 # Local caches
 .cache/
 .home/

@@ -79,30 +79,15 @@ public sealed class RefreshCoordinator(
         await AddStoredAccountAsync(session, cancellationToken);
     }
 
-    public async Task AddClaudeDirectoryAsync(string? directory = null, CancellationToken cancellationToken = default)
-    {
-        var path = string.IsNullOrWhiteSpace(directory) ? AgentBarPaths.ClaudeDefaultDirectory : directory.Trim();
-        await AddOrUpdateAccountAsync(
-            new ConfiguredAgentAccount(AgentProviderKind.Claude, new ConfiguredAccountDirectory(path)),
-            showInTray: true,
-            cancellationToken);
-    }
-
     public async Task RemoveAccountAsync(string accountId, CancellationToken cancellationToken = default)
     {
         var settings = (await settingsStore.LoadAsync(cancellationToken)).Normalized();
-        var account = settings.Accounts.FirstOrDefault(candidate => string.Equals(candidate.Id, accountId, StringComparison.OrdinalIgnoreCase));
         var updated = settings with
         {
             Accounts = settings.Accounts.Where(candidate => !string.Equals(candidate.Id, accountId, StringComparison.OrdinalIgnoreCase)).ToArray(),
             MenuBarAccountIds = settings.MenuBarAccountIds.Where(id => !string.Equals(id, accountId, StringComparison.OrdinalIgnoreCase)).ToArray()
         };
         await settingsStore.SaveAsync(updated, cancellationToken);
-
-        if (account is not null && account.Provider is not AgentProviderKind.Claude)
-        {
-            await authStore.DeleteAsync(account.Provider, LocalAccountIdFromDirectory(account), cancellationToken);
-        }
 
         await InitializeAsync(cancellationToken);
     }
@@ -185,42 +170,13 @@ public sealed class RefreshCoordinator(
         }
     }
 
-    private bool CredentialsDetected(ConfiguredAgentAccount account)
-    {
-        if (account.Provider == AgentProviderKind.Claude)
-        {
-            var directory = string.IsNullOrWhiteSpace(account.Directory.Path)
-                ? AgentBarPaths.ClaudeDefaultDirectory
-                : account.Directory.Path;
-            return File.Exists(Path.Combine(directory, ".credentials.json"))
-                || File.Exists(Path.Combine(directory, "auth.json"));
-        }
-
-        return Directory.Exists(account.Directory.Path);
-    }
+    private bool CredentialsDetected(ConfiguredAgentAccount account) =>
+        Directory.Exists(account.Directory.Path);
 
     private ConfiguredAgentAccount AccountForSession(StoredAuthSession session)
     {
         var directory = _paths.AccountDirectory(session.Provider, session.LocalAccountId);
         return new ConfiguredAgentAccount(session.Provider, new ConfiguredAccountDirectory(directory));
-    }
-
-    private static string LocalAccountIdFromDirectory(ConfiguredAgentAccount account)
-    {
-        var leaf = Path.GetFileName(account.Directory.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        if (string.IsNullOrWhiteSpace(leaf))
-        {
-            return account.Directory.Path;
-        }
-
-        try
-        {
-            return AccountIdCodec.Decode(leaf);
-        }
-        catch (FormatException)
-        {
-            return leaf;
-        }
     }
 
     private static IReadOnlyList<AgentAccountStatus> SelectTrayStatuses(
@@ -263,10 +219,13 @@ public sealed class RefreshCoordinator(
                 return new TrayStatusBar(status.Provider, status.Provider.MenuBarShortPrefix(), null, true);
             }
 
+            var metric = status.Snapshot?.HighlightMetric;
             return new TrayStatusBar(
                 status.Provider,
                 status.Provider.MenuBarShortPrefix(),
-                status.Snapshot?.HighlightMetric?.RemainingPercent);
+                metric?.RemainingPercent,
+                ResetsAt: metric?.ResetsAt,
+                WindowDuration: metric?.WindowDuration);
         }).ToArray();
     }
 

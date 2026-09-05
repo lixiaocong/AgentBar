@@ -12,7 +12,6 @@ struct SettingsView: View {
     private let providerColumns = [
         GridItem(.adaptive(minimum: 260), alignment: .top)
     ]
-    @State private var addAccountProvider: AgentProviderKind?
     @State private var isAddingJunieToken = false
     @State private var isAddingZAICredential = false
     @State private var isClearingHistory = false
@@ -124,9 +123,6 @@ struct SettingsView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .sheet(item: $addAccountProvider) { provider in
-            AddAccountSheet(provider: provider, model: model)
-        }
         .sheet(isPresented: $isAddingJunieToken) {
             AddJunieTokenSheet(model: model)
         }
@@ -167,13 +163,32 @@ struct SettingsView: View {
                 }
 
                 if model.supportsBrowserSignIn(for: provider) {
-                    Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
-                        model.signInWithBrowser(
-                            for: provider,
-                            forceAccountSelection: provider == .codex || hasConfiguredAccounts
-                        )
+                    HStack(spacing: 8) {
+                        Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
+                            model.signInWithBrowser(
+                                for: provider,
+                                forceAccountSelection: provider == .codex || hasConfiguredAccounts
+                            )
+                        }
+                        .disabled(model.isLoginInProgress(for: provider))
+
+                        Button {
+                            model.copyBrowserSignInURL(
+                                for: provider,
+                                forceAccountSelection: provider == .codex || hasConfiguredAccounts
+                            )
+                        } label: {
+                            Label("Copy URL", systemImage: "doc.on.doc")
+                        }
+                        .disabled(!model.canCopyBrowserSignInURL(for: provider))
+                        .help("Copy the sign-in URL without opening the default browser")
+
+                        if model.isLoginInProgress(for: provider) {
+                            Button("Cancel", role: .cancel) {
+                                model.cancelBrowserSignIn(for: provider)
+                            }
+                        }
                     }
-                    .disabled(model.isLoginInProgress(for: provider))
 
                     if let message = model.loginMessage(for: provider) {
                         Text(message)
@@ -195,10 +210,6 @@ struct SettingsView: View {
                 } else if provider == .zai {
                     Button(hasConfiguredAccounts ? "Add Another Coding Plan..." : "Add Coding Plan...") {
                         isAddingZAICredential = true
-                    }
-                } else if provider == .claude {
-                    Button(hasConfiguredAccounts ? "Add Another Auth Directory..." : "Add Claude Auth Directory...") {
-                        addAccountProvider = provider
                     }
                 }
             }
@@ -247,7 +258,7 @@ struct SettingsView: View {
                     .disabled(model.isCodexReconnectInProgress(status.account))
                 }
 
-                Button("Sign Out") {
+                Button("Remove") {
                     model.removeConfiguredAccount(status.account)
                 }
             }
@@ -444,83 +455,6 @@ private struct QuotaHistoryCleanupSheet: View {
             } else {
                 errorMessage = manager.lastError ?? "History could not be cleared."
             }
-        }
-    }
-}
-
-private struct AddAccountSheet: View {
-    let provider: AgentProviderKind
-    let model: AppModel
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var path = ""
-    @State private var errorMessage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Add \(provider.title) Account")
-                .font(.title3.weight(.semibold))
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Directory path")
-                    .font(.caption.weight(.semibold))
-
-                TextField(
-                    "",
-                    text: $path,
-                    prompt: Text(provider.defaultAccountDirectoryDisplayPath)
-                )
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-            }
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 10) {
-                Button("Browse…") {
-                    if let directoryURL = model.selectAccountDirectory(for: provider) {
-                        path = NSString(string: directoryURL.path).abbreviatingWithTildeInPath
-                        errorMessage = nil
-                    }
-                }
-
-                Spacer()
-
-                Button("Cancel", role: .cancel) {
-                    dismiss()
-                }
-
-                Button("Add") {
-                    submit()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 520)
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
-    }
-
-    private func submit() {
-        switch model.addConfiguredAccountDirectory(path: path, for: provider) {
-        case .added:
-            dismiss()
-        case .emptyPath:
-            errorMessage = "Enter a directory path."
-        case .duplicate:
-            errorMessage = "That directory is already configured."
-        case .browserLoginRequired:
-            errorMessage = "\(provider.title) accounts must be added with browser sign-in."
-        case .credentialsFileMissing(let path):
-            errorMessage = "No credentials file found at \(path)."
         }
     }
 }

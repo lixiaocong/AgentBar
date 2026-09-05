@@ -3,7 +3,7 @@
 Minimal macOS menu-bar app that tracks coding-agent quota usage.
 Written in Swift 6 / SwiftUI, targeting macOS 14+.
 
-Codex, GitHub Copilot, and Gemini are displayed **simultaneously** after AgentBar-owned browser sign-in. Tokens are stored in macOS Keychain entries owned by AgentBar, so CLI or IDE profile changes do not silently switch the accounts shown in AgentBar.
+Codex, GitHub Copilot, Gemini, and Claude are displayed **simultaneously** after AgentBar-owned browser sign-in. Tokens are stored in macOS Keychain entries owned by AgentBar, so CLI or IDE profile changes do not silently switch the accounts shown in AgentBar.
 
 ---
 
@@ -107,6 +107,31 @@ Supported tiers:
 | `legacy-tier` | Legacy |
 | `standard-tier` | Standard |
 
+### Claude Code (`AgentProviderKind.claude`)
+
+| Property | Value |
+|---|---|
+| API endpoints | `GET https://api.anthropic.com/api/oauth/usage` (rate-limit windows) and `GET https://api.anthropic.com/api/oauth/profile` (account + plan) |
+| Auth headers | `Authorization: Bearer <access_token>` |
+| Authorize / token | `https://platform.claude.com/oauth/authorize` → `POST https://platform.claude.com/v1/oauth/token` (PKCE S256, **JSON** body, not form-encoded) |
+| Credentials source | AgentBar browser login stored in macOS Keychain |
+| Displayed metrics | Every usage window the API returns, currently `five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet` |
+
+Claude Code is a public OAuth client — PKCE, no client secret — so its client ID lives in
+`ClaudeOAuthConfiguration` (Swift) and `ClaudeQuotaService` (C#). The callback listens on port
+54546/54547 rather than Claude Code's own 54545, so a concurrent `claude login` cannot capture
+AgentBar's callback.
+
+Usage windows are keyed by name at the top level of the response, each carrying `utilization`
+(0–100) and `resets_at`. Anthropic adds windows over time, so both platforms accept **any**
+top-level object with a `utilization` value instead of matching a fixed key list, skip windows
+reporting `is_enabled: false`, and humanize unknown keys for display. When adding rounding logic
+here, note that Swift rounds halves away from zero while .NET rounds to even — the C# side pins
+`MidpointRounding.AwayFromZero` so both platforms render the same labels.
+
+AgentBar does not read Claude Code's own `auth.json` or `.credentials.json`. Browser sign-in is the
+only way to add a Claude account, matching Codex, GitHub Copilot, and Gemini.
+
 ### Z.ai Coding Plan (`AgentProviderKind.zai`)
 
 | Property | Value |
@@ -151,7 +176,7 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 - Codex: `~/Library/Application Support/AgentBar/CodexAccounts`
 - GitHub Copilot: `~/Library/Application Support/AgentBar/GitHubCopilotAccounts`
 - Gemini: `~/Library/Application Support/AgentBar/GeminiAccounts`
-- Claude: `~/.config/claude-code/auth.json` (read-only local Claude Code auth detection)
+- Claude: `~/Library/Application Support/AgentBar/ClaudeAccounts`
 - Z.ai: `~/Library/Application Support/AgentBar/ZAIAccounts`
 - Junie: `~/Library/Application Support/AgentBar/JunieAccounts`
 
@@ -190,7 +215,7 @@ Do not use `NSToolbarItem.Identifier.toggleSidebar` for this window. AppKit trea
 
 When changing this window, verify both directions on the installed Release app: collapse must resize the detail continuously, expand must do the same without a final width jump, and the toolbar button must keep the same leading position in both states.
 
-AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, Gemini, Z.ai, or Junie by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
+AgentBar does not read local CLI login files for any provider. Every account is added through AgentBar's own sign-in and stored in the Keychain.
 
 ---
 
@@ -314,6 +339,10 @@ Test targets:
 | `decodesGeminiQuotaPayload` | Happy-path JSON → `AgentQuotaSnapshot` for Gemini with per-model metrics |
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
+| `decodesClaudeUsageWindowsFromOAuthResponse` | Happy-path `/api/oauth/usage` JSON → windows, ordering, and disabled-window filtering |
+| `claudeUsageAcceptsWindowsAddedByAnthropicLater` | Unknown window keys are humanized and non-window fields ignored |
+| `claudeProfileDecodesNestedAccountAndPlan` | Nested account/organization profile → label and `claude_max` → `Claude Max` |
+| `claudeLoginAuthorizeURLCarriesPKCEAndState` | Authorize URL host, path, PKCE challenge method, scope, and state |
 | `quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat` | Sampling threshold, deduplication, and label carry-forward |
 | `quotaHistoryConfirmsScheduleBeforeDerivingReset` | Schedule candidates require a repeated state before a reset is derived |
 | `quotaHistoryNormalizesLegacyRollingScheduleEvents` | Legacy rolling countdown changes are filtered while confirmed real schedule advances remain resets |

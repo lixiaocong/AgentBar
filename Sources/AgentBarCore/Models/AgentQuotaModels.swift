@@ -55,7 +55,7 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
         case .gemini:
             return "Tracks per-model request quota for Gemini Code Assist (shared with Antigravity IDE)."
         case .claude:
-            return "Detects the local Claude Code account from auth.json. Quota windows are not exposed by AgentBar yet."
+            return "Tracks Claude Code session and weekly usage windows, including per-model limits."
         case .zai:
             return "Tracks GLM Coding Plan quota windows from Z.ai's usage monitor API."
         case .junie:
@@ -409,5 +409,97 @@ public struct AgentQuotaMetric: Codable, Sendable, Equatable, Identifiable {
 
             return "\(windowMinutes) minute window"
         }
+    }
+}
+
+public struct AgentQuotaMetricAggregate: Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let accountCount: Int
+    public let remainingPercent: Double
+    public let isUnlimited: Bool
+    public let resetsAt: Date?
+
+    public init(
+        id: String,
+        title: String,
+        accountCount: Int,
+        remainingPercent: Double,
+        isUnlimited: Bool,
+        resetsAt: Date?
+    ) {
+        self.id = id
+        self.title = title
+        self.accountCount = accountCount
+        self.remainingPercent = remainingPercent
+        self.isUnlimited = isUnlimited
+        self.resetsAt = resetsAt
+    }
+
+    public var displayValue: String {
+        if isUnlimited { return "Unlimited" }
+
+        let roundedToInteger = remainingPercent.rounded()
+        if abs(remainingPercent - roundedToInteger) < 0.005 {
+            return "\(Int(roundedToInteger))%"
+        }
+
+        return String(format: "%.2f%%", remainingPercent)
+    }
+}
+
+public enum AgentQuotaMetricAggregation {
+    /// Returns aggregate quota percentages only when every loaded account
+    /// exposes the same metric ID and title. Missing data is not treated as zero.
+    public static func completeAggregates(
+        for snapshots: [AgentQuotaSnapshot]
+    ) -> [AgentQuotaMetricAggregate] {
+        guard snapshots.count > 1,
+              let firstSnapshot = snapshots.first else {
+            return []
+        }
+
+        return firstSnapshot.metrics.compactMap { firstMetric in
+            let normalizedTitle = normalizeTitle(firstMetric.title)
+            let matchingMetrics = snapshots.compactMap { snapshot in
+                snapshot.metrics.first { metric in
+                    metric.id == firstMetric.id && normalizeTitle(metric.title) == normalizedTitle
+                }
+            }
+
+            guard matchingMetrics.count == snapshots.count else {
+                return nil
+            }
+
+            let isUnlimited = matchingMetrics.contains(where: isUnlimitedMetric)
+            let summedRemainingPercent = matchingMetrics.reduce(0) { total, metric in
+                total + min(max(metric.remainingPercent, 0), 100)
+            }
+            let remainingPercent = summedRemainingPercent / Double(snapshots.count)
+            let resetsAt = matchingMetrics.compactMap(\.resetsAt).min()
+
+            return AgentQuotaMetricAggregate(
+                id: firstMetric.id,
+                title: firstMetric.title,
+                accountCount: snapshots.count,
+                remainingPercent: remainingPercent,
+                isUnlimited: isUnlimited,
+                resetsAt: resetsAt
+            )
+        }
+    }
+
+    private static func normalizeTitle(_ title: String) -> String {
+        title
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    private static func isUnlimitedMetric(_ metric: AgentQuotaMetric) -> Bool {
+        metric.remainingLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare("Unlimited") == .orderedSame ||
+            metric.usedLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare("Unlimited") == .orderedSame
     }
 }

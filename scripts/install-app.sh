@@ -15,11 +15,20 @@ DERIVED_DATA_DIR="$PROJECT_DIR/.xcodebuild"
 XCODEPROJ="$PROJECT_DIR/${APP_NAME}.xcodeproj"
 ICON_SCRIPT="$PROJECT_DIR/scripts/generate-icons.swift"
 ICON_FILE="$PROJECT_DIR/Resources/AppIcon.icns"
+ICON_ASSET_CATALOG="$PROJECT_DIR/Resources/AppIcon.xcassets"
 APP_ENTITLEMENTS="$PROJECT_DIR/Resources/${APP_NAME}.entitlements"
 WIDGET_ENTITLEMENTS="$PROJECT_DIR/Resources/${APP_NAME}Widget.entitlements"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 PLISTBUDDY="/usr/libexec/PlistBuddy"
 BUILD_VERSION="$(date +%Y%m%d%H%M%S)"
+
+cleanup_generated_sources() {
+    rm -rf "$XCODEPROJ" "$ICON_ASSET_CATALOG"
+    rm -f "$ICON_FILE"
+    rmdir "$BUILD_DIR" 2>/dev/null || true
+}
+
+trap cleanup_generated_sources EXIT
 
 unregister_bundle() {
     local bundle_path="$1"
@@ -213,6 +222,10 @@ rm -rf "$DERIVED_DATA_DIR"
 
 echo "==> Launching $APP_NAME"
 open "$INSTALL_PATH"
+
+echo "==> Removing generated project sources"
+cleanup_generated_sources
+trap - EXIT
 
 echo "==> Done"
 echo "    Installed app: $INSTALL_PATH"

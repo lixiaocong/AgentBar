@@ -153,7 +153,7 @@ func appModelShowsReadyForProvidersWithoutQuotaMetrics() {
         accountLabel: "dev@example.com",
         planType: "Claude subscription",
         modelName: nil,
-        sourceSummary: "Claude Code local auth",
+        sourceSummary: "Claude usage API",
         metrics: [],
         updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
     )
@@ -182,23 +182,23 @@ func appModelDefaultsConfiguredDirectoriesToStandardLocations() {
 
 @Test
 @MainActor
-func appModelAcceptsClaudeAuthJSONDirectories() throws {
+func appModelRejectsClaudeDirectoriesItDoesNotOwn() throws {
     let defaults = testDefaults(named: #function)
     let model = AppModel(
         userDefaults: defaults,
         providerAvailabilityResolver: { .all },
         startImmediately: false
     )
-    let directory = try temporaryClaudeAuthDirectory(named: #function)
 
+    // Claude is browser sign-in only, so pointing at a Claude Code config
+    // directory is rejected the same way as the other OAuth providers.
     let result = model.addConfiguredAccountDirectory(
-        path: directory.path,
+        path: FileManager.default.homeDirectoryForCurrentUser.appending(path: ".claude").path,
         for: .claude
     )
 
-    #expect(result == .added)
-    #expect(model.configuredAccounts(for: .claude) == [ConfiguredAccountDirectory(path: directory.path)])
-    #expect(model.accountStatuses(for: .claude).first?.credentialsDetected == true)
+    #expect(result == .browserLoginRequired)
+    #expect(model.configuredAccounts(for: .claude) == [])
 }
 
 @Test
@@ -236,6 +236,84 @@ func appModelPersistsAddedAndRemovedConfiguredDirectories() {
         reloaded.configuredAccounts(for: .codex)
             == [ConfiguredAccountDirectory(path: secondCodexDirectory.path)]
     )
+}
+
+@Test
+@MainActor
+func appModelRemovingAccountsKeepsCredentialsAndManagedDirectories() throws {
+    let defaults = testDefaults(named: #function)
+    let uniqueSuffix = UUID().uuidString
+    let codexAccountID = "remove-codex-\(uniqueSuffix)"
+    let copilotAccountID = "remove-copilot-\(uniqueSuffix)"
+    let codexSession = CodexStoredAuthSession(
+        idToken: "codex-id-token",
+        accessToken: "codex-access-token",
+        refreshToken: "codex-refresh-token",
+        accountID: codexAccountID,
+        localAccountID: codexAccountID,
+        lastRefresh: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let copilotSession = AgentProviderStoredAuthSession(
+        provider: .githubCopilot,
+        accountID: copilotAccountID,
+        accountLabel: "copilot@example.com",
+        accessToken: "copilot-access-token",
+        lastRefresh: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let codexDirectory = CodexAppAuthStore.accountDirectory(for: codexAccountID)
+    let copilotDirectory = AgentProviderAppAuthStore.accountDirectory(
+        for: .githubCopilot,
+        accountID: copilotAccountID
+    )
+    defer {
+        _ = try? CodexAppAuthStore.deleteSession(accountID: codexAccountID)
+        try? CodexAppAuthStore.deleteAccountDirectory(accountID: codexAccountID)
+        _ = try? AgentProviderAppAuthStore.deleteSession(
+            provider: .githubCopilot,
+            accountID: copilotAccountID
+        )
+        try? AgentProviderAppAuthStore.deleteAccountDirectory(
+            provider: .githubCopilot,
+            accountID: copilotAccountID
+        )
+    }
+
+    try CodexAppAuthStore.save(session: codexSession)
+    try CodexAppAuthStore.ensureAccountDirectoryExists(for: codexAccountID)
+    try AgentProviderAppAuthStore.save(session: copilotSession)
+    try AgentProviderAppAuthStore.ensureAccountDirectoryExists(
+        for: .githubCopilot,
+        accountID: copilotAccountID
+    )
+
+    let model = AppModel(userDefaults: defaults, startImmediately: false)
+    model.addConfiguredAccountDirectory(codexDirectory, for: .codex)
+    model.addConfiguredAccountDirectory(copilotDirectory, for: .githubCopilot)
+
+    model.removeConfiguredAccount(
+        ConfiguredAgentAccount(
+            provider: .codex,
+            directory: ConfiguredAccountDirectory(path: codexDirectory.path)
+        )
+    )
+    model.removeConfiguredAccount(
+        ConfiguredAgentAccount(
+            provider: .githubCopilot,
+            directory: ConfiguredAccountDirectory(path: copilotDirectory.path)
+        )
+    )
+
+    #expect(model.configuredAccounts(for: .codex).isEmpty)
+    #expect(model.configuredAccounts(for: .githubCopilot).isEmpty)
+    #expect(try CodexAppAuthStore.loadSession(accountID: codexAccountID) == codexSession)
+    #expect(
+        try AgentProviderAppAuthStore.loadSession(
+            provider: .githubCopilot,
+            accountID: copilotAccountID
+        ) == copilotSession
+    )
+    #expect(FileManager.default.fileExists(atPath: codexDirectory.path))
+    #expect(FileManager.default.fileExists(atPath: copilotDirectory.path))
 }
 
 @Test
@@ -326,6 +404,120 @@ func appModelRejectsEmptyAndDuplicateTypedPaths() {
     )
 }
 
+@Test
+@MainActor
+func appModelCanCancelAbandonedBrowserLogin() async {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(
+        userDefaults: defaults,
+        codexBrowserLoginAction: { _, _ in
+            try await Task.sleep(for: .seconds(30))
+            throw CancellationError()
+        },
+        startImmediately: false
+    )
+
+    model.signInWithBrowser(for: .codex)
+    #expect(model.isLoginInProgress(for: .codex))
+
+    model.cancelBrowserSignIn(for: .codex)
+    await Task.yield()
+
+    #expect(!model.isLoginInProgress(for: .codex))
+    #expect(model.loginError(for: .codex) == nil)
+    #expect(model.loginMessage(for: .codex) == "Sign-in cancelled.")
+}
+
+@Test
+@MainActor
+func appModelTimesOutAbandonedBrowserLogin() async {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(
+        userDefaults: defaults,
+        codexBrowserLoginAction: { _, _ in
+            try await Task.sleep(for: .seconds(30))
+            throw CancellationError()
+        },
+        browserLoginTimeout: .milliseconds(20),
+        startImmediately: false
+    )
+
+    model.signInWithBrowser(for: .codex)
+    #expect(model.isLoginInProgress(for: .codex))
+    for _ in 0 ..< 100 where model.isLoginInProgress(for: .codex) {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(!model.isLoginInProgress(for: .codex))
+    #expect(model.loginError(for: .codex) == "Codex sign-in timed out. Try again.")
+}
+
+@Test
+@MainActor
+func appModelClearsBrowserLoginProgressAfterFailure() async {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(
+        userDefaults: defaults,
+        providerBrowserLoginAction: { _, _, _, _ in
+            throw BrowserLoginTestError.failed
+        },
+        startImmediately: false
+    )
+
+    model.signInWithBrowser(for: .githubCopilot)
+    for _ in 0 ..< 10 where model.isLoginInProgress(for: .githubCopilot) {
+        await Task.yield()
+    }
+
+    #expect(!model.isLoginInProgress(for: .githubCopilot))
+    #expect(model.loginError(for: .githubCopilot) == "Test sign-in failed.")
+}
+
+@Test
+@MainActor
+func appModelCanCopySignInURLWithoutOpeningDefaultBrowser() async {
+    let defaults = testDefaults(named: #function)
+    let authorizationURL = URL(string: "https://example.com/oauth/authorize?state=test")!
+    let copySpy = BrowserLoginURLCopySpy()
+    let model = AppModel(
+        userDefaults: defaults,
+        codexBrowserLoginAction: { openBrowser, progress in
+            #expect(!openBrowser)
+            progress.report("Enter the displayed code if prompted.")
+            progress.reportAuthorizationURL(authorizationURL)
+            try await Task.sleep(for: .seconds(30))
+            throw CancellationError()
+        },
+        browserLoginURLCopyAction: { url in
+            copySpy.urls.append(url)
+            return true
+        },
+        startImmediately: false
+    )
+
+    model.copyBrowserSignInURL(for: .codex)
+    for _ in 0 ..< 20 where copySpy.urls.isEmpty {
+        await Task.yield()
+    }
+
+    #expect(copySpy.urls == [authorizationURL])
+    #expect(model.isLoginInProgress(for: .codex))
+    #expect(model.canCopyBrowserSignInURL(for: .codex))
+    let expectedMessage = "Enter the displayed code if prompted.\nSign-in URL copied. Complete sign-in in your preferred browser."
+    #expect(model.loginMessage(for: .codex) == expectedMessage)
+
+    model.copyBrowserSignInURL(for: .codex)
+    #expect(copySpy.urls == [authorizationURL, authorizationURL])
+    #expect(model.loginMessage(for: .codex) == expectedMessage)
+
+    model.cancelBrowserSignIn(for: .codex)
+}
+
+@MainActor
+private final class BrowserLoginURLCopySpy {
+    var urls: [URL] = []
+}
+
 private func makeSnapshot(
     provider: AgentProviderKind,
     usedPercent: Double,
@@ -357,25 +549,10 @@ private func addAppManagedAccount(
     provider: AgentProviderKind,
     accountID: String
 ) {
-    if provider == .claude {
-        let directory = try! temporaryClaudeAuthDirectory(named: accountID)
-        model.addConfiguredAccountDirectory(directory, for: provider)
-        return
-    }
-
     model.addConfiguredAccountDirectory(
         AgentProviderAppAuthStore.accountDirectory(for: provider, accountID: accountID),
         for: provider
     )
-}
-
-private func temporaryClaudeAuthDirectory(named name: String) throws -> URL {
-    let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        .appending(path: "AgentBarTests-\(name)-\(UUID().uuidString)", directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let auth = #"{"user":{"email":"claude@example.com"},"accessToken":"token","refreshToken":"refresh"}"#
-    try auth.data(using: .utf8)!.write(to: directory.appending(path: "auth.json"))
-    return directory
 }
 
 private func testDefaults(named name: String) -> UserDefaults {
@@ -383,4 +560,12 @@ private func testDefaults(named name: String) -> UserDefaults {
     let defaults = UserDefaults(suiteName: suiteName)!
     defaults.removePersistentDomain(forName: suiteName)
     return defaults
+}
+
+private enum BrowserLoginTestError: LocalizedError {
+    case failed
+
+    var errorDescription: String? {
+        "Test sign-in failed."
+    }
 }

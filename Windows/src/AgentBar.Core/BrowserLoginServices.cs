@@ -420,6 +420,125 @@ public sealed class GeminiBrowserLoginService(
     }
 }
 
+public sealed class ClaudeBrowserLoginService(
+    IAuthSessionStore authStore,
+    IBrowserLauncher browserLauncher,
+    ILocalCallbackServer callbackServer)
+{
+    /// Claude Code listens on 54545 during sign-in. AgentBar prefers a different
+    /// port so a concurrent `claude login` cannot capture AgentBar's callback.
+    private static readonly int[] CallbackPorts = [54546, 54547];
+
+    public async Task<StoredAuthSession> SignInAsync(CancellationToken cancellationToken = default)
+    {
+        var pkce = OAuthHelpers.GeneratePkce();
+        var state = OAuthHelpers.RandomUrlSafeString(32);
+        var port = TcpLocalCallbackServer.FirstAvailablePort(CallbackPorts);
+        var redirectUri = $"http://localhost:{port}{ClaudeQuotaService.CallbackPath}";
+        await browserLauncher.LaunchAsync(
+            BuildAuthorizeUri(redirectUri, pkce.CodeChallenge, state),
+            cancellationToken);
+
+        var callback = await callbackServer.WaitForCallbackAsync(
+            [port],
+            ClaudeQuotaService.CallbackPath,
+            TimeSpan.FromMinutes(5),
+            cancellationToken);
+        BrowserLoginValidation.ValidateCallback(callback, state, "Claude");
+
+        var token = await ExchangeCodeForTokensAsync(
+            callback.Code!,
+            redirectUri,
+            pkce.CodeVerifier,
+            state,
+            cancellationToken);
+        var profile = await FetchProfileAsync(token.AccessToken, cancellationToken);
+        var accountId = profile.AccountId ?? profile.AccountLabel;
+        if (string.IsNullOrWhiteSpace(accountId))
+        {
+            throw new ProviderBrowserLoginException("Claude sign-in did not return an account id.");
+        }
+
+        var session = new StoredAuthSession(
+            AgentProviderKind.Claude,
+            accountId,
+            profile.AccountLabel,
+            token.AccessToken,
+            token.RefreshToken,
+            null,
+            token.ExpiresIn is null ? null : DateTimeOffset.UtcNow.AddSeconds(token.ExpiresIn.Value),
+            ClaudeQuotaService.Scopes,
+            DateTimeOffset.UtcNow);
+        await authStore.SaveAsync(session, cancellationToken);
+        return session;
+    }
+
+    public Uri BuildAuthorizeUri(string redirectUri, string codeChallenge, string state)
+    {
+        var queryItems = new List<KeyValuePair<string, string?>>
+        {
+            new("response_type", "code"),
+            new("client_id", ClaudeQuotaService.ClientId),
+            new("redirect_uri", redirectUri),
+            new("scope", string.Join(' ', ClaudeQuotaService.Scopes)),
+            new("code_challenge", codeChallenge),
+            new("code_challenge_method", "S256"),
+            new("state", state)
+        };
+        return new Uri($"{ClaudeQuotaService.AuthorizationUri}?{OAuthHelpers.FormUrlEncode(queryItems)}");
+    }
+
+    private static async Task<ClaudeOAuthTokenResponse> ExchangeCodeForTokensAsync(
+        string code,
+        string redirectUri,
+        string codeVerifier,
+        string state,
+        CancellationToken cancellationToken)
+    {
+        // The Claude token endpoint takes a JSON body, unlike the form-encoded
+        // OpenAI and Google endpoints above.
+        using var httpClient = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, ClaudeQuotaService.TokenUri);
+        request.Content = ClaudeQuotaService.JsonContent(new Dictionary<string, string?>
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = code,
+            ["redirect_uri"] = redirectUri,
+            ["client_id"] = ClaudeQuotaService.ClientId,
+            ["code_verifier"] = codeVerifier,
+            ["state"] = state
+        });
+
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new ProviderBrowserLoginException(
+                $"Claude token exchange failed with HTTP {(int)response.StatusCode}: {Encoding.UTF8.GetString(bytes)}");
+        }
+
+        return JsonSerializer.Deserialize<ClaudeOAuthTokenResponse>(bytes, JsonOptionsFactory.Create())
+            ?? throw new ProviderBrowserLoginException("Claude token response was invalid.");
+    }
+
+    private static async Task<ClaudeProfile> FetchProfileAsync(
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        using var httpClient = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, ClaudeQuotaService.ProfileUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new ProviderBrowserLoginException("Claude account lookup failed.");
+        }
+
+        return ClaudeProfile.Parse(bytes);
+    }
+}
+
 public sealed class ProviderBrowserLoginException(string message) : Exception(message);
 
 internal static class BrowserLoginValidation
@@ -482,3 +601,8 @@ public sealed record GoogleOAuthTokenResponse(
     [property: System.Text.Json.Serialization.JsonPropertyName("expires_in")] int? ExpiresIn);
 
 public sealed record GoogleUserInfoResponse(string? Id, string? Email, string? Name);
+
+public sealed record ClaudeOAuthTokenResponse(
+    [property: System.Text.Json.Serialization.JsonPropertyName("access_token")] string AccessToken,
+    [property: System.Text.Json.Serialization.JsonPropertyName("refresh_token")] string? RefreshToken,
+    [property: System.Text.Json.Serialization.JsonPropertyName("expires_in")] int? ExpiresIn);

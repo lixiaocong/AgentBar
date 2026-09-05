@@ -1,0 +1,20 @@
+{
+  "five_hour": {
+    "utilization": 42.5,
+    "resets_at": "2026-07-29T18:00:00Z"
+  },
+  "seven_day": {
+    "utilization": 18,
+    "resets_at": "2026-08-02T09:30:00Z"
+  },
+  "seven_day_opus": {
+    "utilization": 7.25,
+    "resets_at": "2026-08-02T09:30:00Z"
+  },
+  "seven_day_sonnet": {
+    "utilization": 0,
+    "resets_at": "2026-08-02T09:30:00Z",
+    "is_enabled": false
+  },
+  "account_uuid": "11111111-2222-3333-4444-555555555555"
+}

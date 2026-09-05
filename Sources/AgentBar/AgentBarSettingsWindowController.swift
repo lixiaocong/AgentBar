@@ -7,6 +7,8 @@ import AgentBarCore
 
 @MainActor
 final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelegate {
+    private let model: AppModel
+
     init(
         model: AppModel,
         historyManager: QuotaHistoryManager,
@@ -35,6 +37,7 @@ final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelega
         window.identifier = NSUserInterfaceItemIdentifier("AgentBarSettingsWindow")
         window.setContentSize(NSSize(width: 460, height: 760))
 
+        self.model = model
         super.init(window: window)
         self.window?.delegate = self
     }
@@ -52,5 +55,9 @@ final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelega
         showWindow(nil)
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        model.cancelAllBrowserSignIns()
     }
 }

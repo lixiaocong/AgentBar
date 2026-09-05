@@ -12,7 +12,10 @@ import AgentBarCore
 struct CodexBrowserLoginService {
     private let callbackPorts: [UInt16] = [1457, 1455]
 
-    func signIn() async throws -> CodexStoredAuthSession {
+    func signIn(
+        openBrowser: Bool = true,
+        authorizationURL: @MainActor @escaping (URL) -> Void = { _ in }
+    ) async throws -> CodexStoredAuthSession {
         let pkce = try CodexPKCE.generate()
         let state = try CodexPKCE.randomURLSafeString(byteCount: 32)
         let callbackServer = try await CodexOAuthCallbackServer.start(preferredPorts: callbackPorts)
@@ -22,10 +25,13 @@ struct CodexBrowserLoginService {
             codeChallenge: pkce.codeChallenge,
             state: state
         )
+        authorizationURL(authURL)
 
-        guard NSWorkspace.shared.open(authURL) else {
-            callbackServer.cancel()
-            throw CodexBrowserLoginError.browserOpenFailed
+        if openBrowser {
+            guard NSWorkspace.shared.open(authURL) else {
+                callbackServer.cancel()
+                throw CodexBrowserLoginError.browserOpenFailed
+            }
         }
 
         let callback = try await callbackServer.waitForCallback()
