@@ -1,102 +1,87 @@
 # AgentBar
 
-Minimal macOS menu bar app for tracking local coding-agent usage and account status, with a desktop widget for quick at-a-glance viewing.
+AgentBar keeps coding-agent quota visible from the macOS menu bar or Windows system tray. See remaining quota, usage windows, reset times, and multiple accounts without opening each provider's dashboard.
 
-> This app was generated entirely by coding agents.
+[Download the latest release](https://github.com/lixiaocong/AgentBar/releases/latest)
 
-AgentBar uses app-owned sign-in for browser/API-token providers, stores tokens in its own macOS Keychain vault, and displays signed-in accounts side by side in the menu bar popover.
+## Preview
 
-## Desktop Widget
+### Menu bar window
 
-AgentBar now bundles a native macOS desktop widget. After installing `build/AgentBar.app`, add it from the widget gallery and place it on the desktop to see one selected Codex, GitHub Copilot, Gemini, Claude, or Junie account without opening the menu bar popover.
+Click AgentBar in the menu bar to see every active quota window for the selected accounts. Providers stay in separate columns, and each account keeps its own plan and reset information.
 
-For the most reliable widget discovery flow, use:
+<img src="Resources/Screenshots/main-window.png" alt="AgentBar menu bar window" width="820">
 
-```bash
-./scripts/install-app.sh
-```
+### Settings
 
-That builds the app, installs it to `/Applications/AgentBar.app`, registers it with LaunchServices, and opens it once so macOS can pick up the embedded widget extension.
+Settings lets you add or remove accounts, choose what appears in the menu bar, change the refresh interval, and manage quota history.
 
-## Main UI
+<img src="Resources/Screenshots/settings.png" alt="AgentBar settings window" width="460">
 
-The popover shows all detected providers side by side, and each provider column can include multiple configured accounts. The preview below uses the original screenshot, with personal details masked.
+## Features
 
-![AgentBar main UI preview with masked account details](Resources/Screenshots/main-ui-screenshot-masked.png)
+- Shows remaining quota, used quota, and reset times for every available usage window.
+- Supports multiple accounts for the same provider.
+- Displays dynamically returned model and plan quotas instead of a fixed list.
+- Keeps up to three selected accounts visible in the macOS menu bar.
+- Records local quota history on macOS so usage and resets are easy to review.
+- Includes a configurable medium-sized macOS desktop widget for one account.
 
-Current providers:
+## Supported Services
 
-- Codex
-- GitHub Copilot
-- Gemini Code Assist
-- Claude Code
-- Junie by JetBrains
+| Service | What is shown | macOS | Windows |
+| --- | --- | --- | --- |
+| Codex | Usage windows, reset times, plan, and available reset credits | Yes | Yes |
+| GitHub Copilot | Monthly quota and reset time | Yes | Yes |
+| Gemini Code Assist | Dynamic per-model quotas and reset times | Yes | Yes |
+| Claude Code | Session and weekly usage windows, per-model limits, reset times, and plan | Yes | Yes |
+| Z.ai Coding Plan | Coding Plan quota windows and reset times | Yes | Not yet |
+| Junie by JetBrains | Available monthly quota when provided by Junie | Yes | Yes |
 
-## Run
+## Install
 
-```bash
-swift run AgentBar
-```
+### macOS
 
-## Test
+AgentBar requires macOS 14 or later.
 
-```bash
-swift test --scratch-path .build
-```
+1. Open the [latest release](https://github.com/lixiaocong/AgentBar/releases/latest).
+2. Download `AgentBar-Mac.zip` and unzip it.
+3. Move `AgentBar.app` to the Applications folder.
+4. Open AgentBar. Its status appears on the right side of the menu bar.
 
-## How It Works
+AgentBar is a menu bar app, so it does not open a normal Dock window. If macOS asks for confirmation the first time, open the app from Finder using **Right-click > Open**.
 
-### Codex
+### Windows
 
-AgentBar signs in with the browser, stores Codex credentials in the macOS Keychain, then calls:
+1. Open the [latest release](https://github.com/lixiaocong/AgentBar/releases/latest).
+2. Download and run `AgentBar.exe`.
+3. Use the AgentBar icon in the system tray to open usage or Settings.
 
-- `GET https://chatgpt.com/backend-api/wham/usage`
+## Add Accounts
 
-It displays:
+Open **Settings...** from AgentBar:
 
-- 5-hour usage
-- 7-day usage
-- reset timestamps
-- detected plan type
+- Use **Sign In with Browser...** for Codex, GitHub Copilot, Gemini Code Assist, and Claude Code.
+- Use **Add Coding Plan...** for a Z.ai Coding Plan account on macOS.
+- Use **Add Junie Token...** for Junie by JetBrains.
 
-### GitHub Copilot
+You can add more than one account, then choose which accounts are represented in the menu bar or system tray.
 
-AgentBar signs in with the browser through GitHub's device authorization flow, stores GitHub Copilot credentials in the macOS Keychain, then calls:
+## Quota History on macOS
 
-- `GET https://api.github.com/copilot_internal/user`
+Choose **History...** from the AgentBar window to review quota changes over time. AgentBar records changes while it is running and keeps the history on this Mac until you clear it from Settings.
 
-It displays:
+History recording is enabled by default. You can turn it off, remove older records, or clear all history at any time.
 
-- monthly premium-request usage
-- plan allowance
-- reset timestamp
+## Desktop Widget on macOS
 
-### Gemini Code Assist
+1. Right-click the desktop and choose **Edit Widgets...**.
+2. Search for **Agent Bar**.
+3. Add the medium widget.
+4. Edit the widget to choose the account it should display.
 
-AgentBar signs in with the browser through Google's OAuth flow, stores Gemini credentials in the macOS Keychain, refreshes the OAuth token when needed, then calls:
+Open AgentBar at least once after installation so macOS can discover the widget and its accounts.
 
-- `POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
-- `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`
+## Privacy
 
-It displays:
-
-- detected Google account
-- tier name
-- per-model request quota buckets
-
-### Claude Code
-
-AgentBar reads Claude Code auth from `~/.config/claude-code/auth.json` by default. You can also add another directory that contains `auth.json` from Settings.
-
-AgentBar does not currently show Claude quota windows because the app does not have a confirmed quota endpoint wired for Claude yet. The Claude card shows the detected local account and auth type.
-
-### Junie
-
-AgentBar stores a Junie API token in its own macOS Keychain vault. Add the token from Settings after generating it at `junie.jetbrains.com/cli`.
-
-It displays:
-
-- detected Junie account
-- license/auth type
-- current AI Assistant monthly credits when JetBrains exposes them
-- remaining quota progress bar and renewal time when the JetBrains AI Assistant quota cache is present
+AgentBar keeps sign-in credentials in protected local system storage. Quota history also stays on the computer and is not synced or uploaded by AgentBar.

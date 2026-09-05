@@ -15,7 +15,11 @@ public enum AgentAccountSnapshotLoader {
             ).isAvailable
         case .claude:
             return ClaudeQuotaService(
-                installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
+                installation: claudeInstallation(for: account)
+            ).isAvailable
+        case .zai:
+            return ZAIQuotaService(
+                installation: zaiInstallation(for: account)
             ).isAvailable
         case .junie:
             return JunieQuotaService(
@@ -40,7 +44,11 @@ public enum AgentAccountSnapshotLoader {
             ).loadSnapshot()
         case .claude:
             return try await ClaudeQuotaService(
-                installation: ClaudeCLIInstallation(configDirectory: account.directory.url)
+                installation: claudeInstallation(for: account)
+            ).loadSnapshot()
+        case .zai:
+            return try await ZAIQuotaService(
+                installation: zaiInstallation(for: account)
             ).loadSnapshot()
         case .junie:
             return try await JunieQuotaService(
@@ -91,6 +99,28 @@ public enum AgentAccountSnapshotLoader {
         }
 
         return JunieInstallation(configDirectory: account.directory.url)
+    }
+
+    private static func claudeInstallation(for account: ConfiguredAgentAccount) -> ClaudeCLIInstallation {
+        if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: .claude
+        ) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return ClaudeCLIInstallation(configDirectory: account.directory.url, appManagedAccountID: nil)
+    }
+
+    private static func zaiInstallation(for account: ConfiguredAgentAccount) -> ZAIInstallation {
+        if let accountID = AgentProviderAppAuthStore.accountID(
+            fromAccountDirectory: account.directory.url,
+            provider: .zai
+        ) {
+            return .appManaged(accountID: accountID)
+        }
+
+        return ZAIInstallation(configDirectory: account.directory.url)
     }
 }
 

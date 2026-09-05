@@ -92,12 +92,14 @@ public struct CodexQuotaService: Sendable {
         logDebug("Codex response body: \(String(data: data, encoding: .utf8) ?? "<non-UTF8>")", log: networkLog)
 
         let apiWorkspaceLabel = try? await loadWorkspaceDisplayName(credentials: credentials)
+        let resetCredits = await loadResetCreditsIfAvailable(credentials: credentials)
 
         return try decodeSnapshot(
             from: data,
             accountLabel: credentials.accountLabel,
             spaceLabel: apiWorkspaceLabel ?? credentials.spaceLabel,
-            updatedAt: Date()
+            updatedAt: Date(),
+            resetCredits: resetCredits
         )
     }
 
@@ -105,7 +107,8 @@ public struct CodexQuotaService: Sendable {
         from data: Data,
         accountLabel: String,
         spaceLabel: String? = nil,
-        updatedAt: Date
+        updatedAt: Date,
+        resetCredits: AgentQuotaResetCredits? = nil
     ) throws -> AgentQuotaSnapshot {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -136,7 +139,9 @@ public struct CodexQuotaService: Sendable {
 
         metrics = uniqueMetrics(metrics)
         let rateLimits = ([payload.rateLimit, payload.codeReviewRateLimit] + (payload.additionalRateLimits ?? []).map(\.rateLimit)).compactMap { $0 }
-        let hasQuotaState = rateLimits.contains(where: \.hasQuotaState) || payload.credits?.hasQuotaState == true
+        let hasQuotaState = rateLimits.contains(where: \.hasQuotaState) ||
+            payload.credits?.hasQuotaState == true ||
+            resetCredits?.hasAvailableCredits == true
 
         guard !metrics.isEmpty || hasQuotaState else {
             throw CodexQuotaError.noQuotaInResponse
@@ -153,7 +158,54 @@ public struct CodexQuotaService: Sendable {
             modelName: nil,
             sourceSummary: metrics.isEmpty ? "No active Codex quota windows" : "ChatGPT Codex API",
             metrics: metrics,
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            resetCredits: resetCredits
+        )
+    }
+
+    private func loadResetCreditsIfAvailable(credentials: CodexAuthCredentials) async -> AgentQuotaResetCredits? {
+        do {
+            return try await loadResetCredits(credentials: credentials)
+        } catch {
+            logDebug("[Codex] Reset credits unavailable: \(error.localizedDescription)", log: networkLog)
+            return nil
+        }
+    }
+
+    private func loadResetCredits(credentials: CodexAuthCredentials) async throws -> AgentQuotaResetCredits {
+        var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!)
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(credentials.accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+        request.setValue("CODEX", forHTTPHeaderField: "OAI-Product-Sku")
+        request.setValue("AgentBar", forHTTPHeaderField: "User-Agent")
+
+        logInfo("Codex → GET /backend-api/wham/rate-limit-reset-credits (account: \(masked(credentials.accountID)))", log: networkLog)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexQuotaError.invalidResponse
+        }
+
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "Request failed."
+            throw CodexQuotaError.httpStatus(httpResponse.statusCode, message: body)
+        }
+
+        return try decodeResetCredits(from: data)
+    }
+
+    public func decodeResetCredits(from data: Data) throws -> AgentQuotaResetCredits {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = try decoder.decode(CodexResetCreditsPayload.self, from: data)
+        let credits = (payload.credits ?? []).map(\.agentQuotaResetCredit)
+        let availableCount = payload.availableCount ?? credits.filter(\.isAvailable).count
+
+        return AgentQuotaResetCredits(
+            availableCount: availableCount,
+            credits: credits
         )
     }
 
@@ -637,6 +689,103 @@ private struct CodexCreditsSnapshot: Decodable {
 
     var hasQuotaState: Bool {
         hasCredits != nil || unlimited != nil || balance != nil
+    }
+}
+
+private struct CodexResetCreditsPayload: Decodable {
+    let availableCount: Int?
+    let credits: [CodexResetCreditPayload]?
+    let totalEarnedCount: Int?
+}
+
+private struct CodexResetCreditPayload: Decodable {
+    let id: String?
+    let status: String?
+    let resetType: String?
+    let expiresAt: CodexFlexibleDate?
+    let grantedAt: CodexFlexibleDate?
+    let redeemedAt: CodexFlexibleDate?
+    let redeemStartedAt: CodexFlexibleDate?
+
+    var agentQuotaResetCredit: AgentQuotaResetCredit {
+        AgentQuotaResetCredit(
+            idSuffix: Self.displaySuffix(from: id),
+            status: Self.trimmed(status) ?? "unknown",
+            resetType: Self.trimmed(resetType) ?? "codex_rate_limits",
+            expiresAt: expiresAt?.value,
+            grantedAt: grantedAt?.value,
+            redeemedAt: redeemedAt?.value,
+            redeemStartedAt: redeemStartedAt?.value
+        )
+    }
+
+    private static func displaySuffix(from id: String?) -> String {
+        guard let trimmed = trimmed(id) else {
+            return "reset"
+        }
+
+        if let suffix = trimmed.split(separator: "-").last,
+           !suffix.isEmpty {
+            return String(suffix)
+        }
+
+        return trimmed
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+
+        return trimmed
+    }
+}
+
+private struct CodexFlexibleDate: Decodable {
+    let value: Date?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+
+        if container.decodeNil() {
+            value = nil
+            return
+        }
+
+        if let timestamp = try? container.decode(Double.self) {
+            value = Self.date(fromTimestamp: timestamp)
+            return
+        }
+
+        if let rawString = try? container.decode(String.self) {
+            let trimmed = rawString.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let timestamp = Double(trimmed) {
+                value = Self.date(fromTimestamp: timestamp)
+            } else {
+                value = Self.date(fromISO8601: trimmed)
+            }
+            return
+        }
+
+        value = nil
+    }
+
+    private static func date(fromTimestamp value: Double) -> Date {
+        let seconds = value > 10_000_000_000 ? value / 1_000 : value
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    private static func date(fromISO8601 value: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: value) {
+            return date
+        }
+
+        let standardFormatter = ISO8601DateFormatter()
+        standardFormatter.formatOptions = [.withInternetDateTime]
+        return standardFormatter.date(from: value)
     }
 }
 

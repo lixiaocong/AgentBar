@@ -1,6 +1,8 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Network
+import Security
 
 #if canImport(AgentBarCore)
 import AgentBarCore
@@ -11,12 +13,19 @@ struct GitHubCopilotBrowserLoginService {
     private let clientID = "Ov23liV9UpD7Rnfnskm3"
     private let scopes = ["repo", "workflow", "read:user", "user:email"]
 
-    func signIn(progress: @MainActor @escaping (String?) -> Void = { _ in }) async throws -> AgentProviderStoredAuthSession {
+    func signIn(
+        openBrowser: Bool = true,
+        progress: @MainActor @escaping (String?) -> Void = { _ in },
+        authorizationURL: @MainActor @escaping (URL) -> Void = { _ in }
+    ) async throws -> AgentProviderStoredAuthSession {
         let device = try await requestDeviceCode()
         progress("If GitHub does not fill the code automatically, enter \(device.userCode).")
+        authorizationURL(device.verificationURLToOpen)
 
-        guard NSWorkspace.shared.open(device.verificationURLToOpen) else {
-            throw ProviderBrowserLoginError.browserOpenFailed("GitHub Copilot")
+        if openBrowser {
+            guard NSWorkspace.shared.open(device.verificationURLToOpen) else {
+                throw ProviderBrowserLoginError.browserOpenFailed("GitHub Copilot")
+            }
         }
 
         let token = try await pollForAccessToken(device: device)
@@ -211,7 +220,11 @@ struct GeminiBrowserLoginService {
         self.oauthClientProvider = oauthClientProvider
     }
 
-    func signIn(forceAccountSelection: Bool = false) async throws -> AgentProviderStoredAuthSession {
+    func signIn(
+        forceAccountSelection: Bool = false,
+        openBrowser: Bool = true,
+        authorizationURL: @MainActor @escaping (URL) -> Void = { _ in }
+    ) async throws -> AgentProviderStoredAuthSession {
         let oauthClient = try oauthClientProvider()
         let state = UUID().uuidString + UUID().uuidString
         let callbackServer = try await ProviderOAuthCallbackServer.start(preferredPorts: callbackPorts)
@@ -222,10 +235,13 @@ struct GeminiBrowserLoginService {
             forceAccountSelection: forceAccountSelection,
             oauthClient: oauthClient
         )
+        authorizationURL(authURL)
 
-        guard NSWorkspace.shared.open(authURL) else {
-            callbackServer.cancel()
-            throw ProviderBrowserLoginError.browserOpenFailed("Gemini")
+        if openBrowser {
+            guard NSWorkspace.shared.open(authURL) else {
+                callbackServer.cancel()
+                throw ProviderBrowserLoginError.browserOpenFailed("Gemini")
+            }
         }
 
         let callback = try await callbackServer.waitForCallback()
@@ -362,6 +378,204 @@ struct GeminiBrowserLoginService {
     }
 }
 
+@MainActor
+struct ClaudeBrowserLoginService {
+    private let callbackPorts: [UInt16]
+
+    init(callbackPorts: [UInt16] = ClaudeOAuthConfiguration.callbackPorts) {
+        self.callbackPorts = callbackPorts
+    }
+
+    func signIn(
+        openBrowser: Bool = true,
+        authorizationURL: @MainActor @escaping (URL) -> Void = { _ in }
+    ) async throws -> AgentProviderStoredAuthSession {
+        let pkce = try ProviderPKCE.generate(provider: "Claude")
+        let state = try ProviderPKCE.randomURLSafeString(byteCount: 32, provider: "Claude")
+        let callbackServer = try await ProviderOAuthCallbackServer.start(
+            preferredPorts: callbackPorts,
+            callbackPath: ClaudeOAuthConfiguration.callbackPath
+        )
+        let redirectURI = ClaudeOAuthConfiguration.redirectURI(port: callbackServer.port)
+        let authURL = try buildAuthorizeURL(
+            redirectURI: redirectURI,
+            codeChallenge: pkce.codeChallenge,
+            state: state
+        )
+        authorizationURL(authURL)
+
+        if openBrowser {
+            guard NSWorkspace.shared.open(authURL) else {
+                callbackServer.cancel()
+                throw ProviderBrowserLoginError.browserOpenFailed("Claude")
+            }
+        }
+
+        let callback = try await callbackServer.waitForCallback()
+        if let error = callback.error {
+            throw ProviderBrowserLoginError.oauthFailed("Claude sign-in failed: \(error)")
+        }
+
+        guard callback.state == state else {
+            throw ProviderBrowserLoginError.stateMismatch("Claude")
+        }
+
+        guard let code = callback.code?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !code.isEmpty else {
+            throw ProviderBrowserLoginError.missingAuthorizationCode("Claude")
+        }
+
+        let tokens = try await exchangeCodeForTokens(
+            code: code,
+            redirectURI: redirectURI,
+            codeVerifier: pkce.codeVerifier,
+            state: state
+        )
+
+        let profile = try await fetchProfile(accessToken: tokens.accessToken)
+        guard let accountID = profile.accountID ?? profile.emailAddress,
+              !accountID.isEmpty else {
+            throw ProviderBrowserLoginError.missingAccountID("Claude")
+        }
+
+        return AgentProviderStoredAuthSession(
+            provider: .claude,
+            accountID: accountID,
+            accountLabel: profile.preferredAccountLabel,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            expiryDate: tokens.expiresIn.map { Date().addingTimeInterval(TimeInterval($0)) },
+            scopes: ClaudeOAuthConfiguration.scopes,
+            lastRefresh: Date()
+        )
+    }
+
+    func buildAuthorizeURL(
+        redirectURI: String,
+        codeChallenge: String,
+        state: String
+    ) throws -> URL {
+        var components = URLComponents(
+            url: ClaudeOAuthConfiguration.authorizationURL,
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "client_id", value: ClaudeOAuthConfiguration.clientID),
+            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "scope", value: ClaudeOAuthConfiguration.scopes.joined(separator: " ")),
+            URLQueryItem(name: "code_challenge", value: codeChallenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state)
+        ]
+
+        guard let url = components?.url else {
+            throw ProviderBrowserLoginError.invalidAuthorizeURL("Claude")
+        }
+
+        return url
+    }
+
+    private func exchangeCodeForTokens(
+        code: String,
+        redirectURI: String,
+        codeVerifier: String,
+        state: String
+    ) async throws -> ClaudeOAuthTokenResponse {
+        // The Claude token endpoint takes a JSON body, unlike the form-encoded
+        // OpenAI and Google endpoints above.
+        var request = URLRequest(url: ClaudeOAuthConfiguration.tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirectURI,
+            "client_id": ClaudeOAuthConfiguration.clientID,
+            "code_verifier": codeVerifier,
+            "state": state
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ProviderBrowserLoginError.invalidTokenResponse("Claude")
+        }
+
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "Request failed."
+            throw ProviderBrowserLoginError.tokenExchangeFailed(
+                "Claude token exchange failed with HTTP \(httpResponse.statusCode): \(body)"
+            )
+        }
+
+        return try JSONDecoder().decode(ClaudeOAuthTokenResponse.self, from: data)
+    }
+
+    private func fetchProfile(accessToken: String) async throws -> ClaudeOAuthProfile {
+        var request = URLRequest(url: ClaudeOAuthConfiguration.profileURL)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(ClaudeOAuthConfiguration.betaHeaderValue, forHTTPHeaderField: "anthropic-beta")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200 ... 299).contains(httpResponse.statusCode) else {
+            throw ProviderBrowserLoginError.tokenExchangeFailed("Claude account lookup failed.")
+        }
+
+        return try ClaudeOAuthProfile.decode(from: data)
+    }
+}
+
+private struct ClaudeOAuthTokenResponse: Decodable {
+    let accessToken: String
+    let refreshToken: String?
+    let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresIn = "expires_in"
+    }
+}
+
+private struct ProviderPKCE {
+    let codeVerifier: String
+    let codeChallenge: String
+
+    static func generate(provider: String) throws -> ProviderPKCE {
+        let verifier = try randomURLSafeString(byteCount: 64, provider: provider)
+        let digest = SHA256.hash(data: Data(verifier.utf8))
+        let challenge = Data(digest).providerBase64URLEncodedString()
+        return ProviderPKCE(codeVerifier: verifier, codeChallenge: challenge)
+    }
+
+    static func randomURLSafeString(byteCount: Int, provider: String) throws -> String {
+        var data = Data(count: byteCount)
+        let status = data.withUnsafeMutableBytes { bytes in
+            SecRandomCopyBytes(kSecRandomDefault, byteCount, bytes.baseAddress!)
+        }
+
+        guard status == errSecSuccess else {
+            throw ProviderBrowserLoginError.callbackServerFailed(
+                "\(provider) sign-in could not generate secure random data."
+            )
+        }
+
+        return data.providerBase64URLEncodedString()
+    }
+}
+
+private extension Data {
+    func providerBase64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
 enum ProviderBrowserLoginError: LocalizedError {
     case browserOpenFailed(String)
     case invalidAuthorizeURL(String)
@@ -479,21 +693,26 @@ private final class ProviderOAuthCallbackServer: @unchecked Sendable {
     let port: UInt16
 
     private let listener: NWListener
+    private let callbackPath: String
     private let queue = DispatchQueue(label: "com.agentbar.provider-oauth-callback")
     private let lock = NSLock()
     private var continuation: CheckedContinuation<ProviderOAuthCallback, Error>?
     private var completedResult: Result<ProviderOAuthCallback, Error>?
 
-    private init(listener: NWListener, port: UInt16) {
+    private init(listener: NWListener, port: UInt16, callbackPath: String) {
         self.listener = listener
         self.port = port
+        self.callbackPath = callbackPath
     }
 
-    static func start(preferredPorts: [UInt16]) async throws -> ProviderOAuthCallbackServer {
+    static func start(
+        preferredPorts: [UInt16],
+        callbackPath: String = "/oauth2callback"
+    ) async throws -> ProviderOAuthCallbackServer {
         var lastError: Error?
         for port in preferredPorts {
             do {
-                return try await start(port: port)
+                return try await start(port: port, callbackPath: callbackPath)
             } catch {
                 lastError = error
             }
@@ -523,13 +742,13 @@ private final class ProviderOAuthCallbackServer: @unchecked Sendable {
         finish(.failure(ProviderBrowserLoginError.callbackServerFailed("Sign-in was cancelled.")))
     }
 
-    private static func start(port: UInt16) async throws -> ProviderOAuthCallbackServer {
+    private static func start(port: UInt16, callbackPath: String) async throws -> ProviderOAuthCallbackServer {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
             throw ProviderBrowserLoginError.callbackServerFailed("Invalid callback port \(port).")
         }
 
         let listener = try NWListener(using: .tcp, on: endpointPort)
-        let server = ProviderOAuthCallbackServer(listener: listener, port: port)
+        let server = ProviderOAuthCallbackServer(listener: listener, port: port, callbackPath: callbackPath)
 
         return try await withCheckedThrowingContinuation { continuation in
             final class StartState: @unchecked Sendable {
@@ -573,7 +792,7 @@ private final class ProviderOAuthCallbackServer: @unchecked Sendable {
 
             guard let data,
                   let request = String(data: data, encoding: .utf8),
-                  let callback = Self.parseCallback(from: request) else {
+                  let callback = Self.parseCallback(from: request, expectedPath: self.callbackPath) else {
                 self.sendResponse(status: 400, body: "AgentBar could not parse the sign-in callback.", connection: connection)
                 self.finish(.failure(ProviderBrowserLoginError.callbackServerFailed("Invalid callback request.")))
                 return
@@ -588,7 +807,7 @@ private final class ProviderOAuthCallbackServer: @unchecked Sendable {
         }
     }
 
-    private static func parseCallback(from request: String) -> ProviderOAuthCallback? {
+    private static func parseCallback(from request: String, expectedPath: String) -> ProviderOAuthCallback? {
         guard let firstLine = request.components(separatedBy: "\r\n").first else {
             return nil
         }
@@ -600,7 +819,7 @@ private final class ProviderOAuthCallbackServer: @unchecked Sendable {
 
         let path = String(parts[1])
         guard let components = URLComponents(string: "http://127.0.0.1\(path)"),
-              components.path == "/oauth2callback" else {
+              components.path == expectedPath else {
             return nil
         }
 

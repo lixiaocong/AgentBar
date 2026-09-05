@@ -275,6 +275,84 @@ func codexDisplaysAdditionalRateLimitWindowsIndependently() throws {
 }
 
 @Test
+func codexDecodesResetCreditPayload() throws {
+    let payload = """
+    {
+      "available_count": 3,
+      "total_earned_count": 3,
+      "credits": [
+        {
+          "id": "credit-one-e2907349",
+          "status": "available",
+          "reset_type": "codex_rate_limits",
+          "expires_at": "2026-07-18T00:33:47.309841Z",
+          "granted_at": "2026-06-18T00:33:47.309841Z"
+        },
+        {
+          "id": "credit-redeemed-done",
+          "status": "redeemed",
+          "reset_type": "codex_rate_limits",
+          "expires_at": "2026-07-12T00:00:00Z",
+          "redeemed_at": "2026-07-01T00:00:00Z"
+        },
+        {
+          "id": "credit-two-0284334e",
+          "status": "available",
+          "resetType": "codex_rate_limits",
+          "expiresAt": 1785109119931.028
+        }
+      ]
+    }
+    """
+
+    let resetCredits = try CodexQuotaService().decodeResetCredits(from: Data(payload.utf8))
+
+    #expect(resetCredits.availableCount == 3)
+    #expect(resetCredits.visibleAvailableCount == 3)
+    #expect(resetCredits.credits.count == 3)
+    #expect(resetCredits.availableCredits.map(\.idSuffix) == ["e2907349", "0284334e"])
+    #expect(resetCredits.nextExpiringCredit?.expiresAt == iso8601Date("2026-07-18T00:33:47.309841Z"))
+    #expect(
+        abs(
+            (resetCredits.availableCredits[1].expiresAt?.timeIntervalSince1970 ?? 0) -
+                1_785_109_119.931028
+        ) < 0.001
+    )
+}
+
+@Test
+func codexAttachesResetCreditsToSnapshot() throws {
+    let payload = """
+    {
+      "plan_type": "prolite",
+      "rate_limit": {}
+    }
+    """
+    let resetCredits = AgentQuotaResetCredits(
+        availableCount: 1,
+        credits: [
+            AgentQuotaResetCredit(
+                idSuffix: "e2907349",
+                status: "available",
+                resetType: "codex_rate_limits",
+                expiresAt: iso8601Date("2026-07-18T00:33:47.309841Z")
+            )
+        ]
+    )
+
+    let snapshot = try CodexQuotaService().decodeSnapshot(
+        from: Data(payload.utf8),
+        accountLabel: "Account test",
+        updatedAt: Date(timeIntervalSince1970: 1_775_600_000),
+        resetCredits: resetCredits
+    )
+
+    #expect(snapshot.resetCredits?.availableCount == 1)
+    #expect(snapshot.resetCredits?.availableCredits.first?.idSuffix == "e2907349")
+    #expect(snapshot.sourceSummary == "No active Codex quota windows")
+}
+
+@Test
 func rejectsUsagePayloadWithoutQuotaWindows() throws {
     let payload = """
     {
@@ -468,4 +546,16 @@ private func base64URL(_ value: String) -> String {
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
         .replacingOccurrences(of: "=", with: "")
+}
+
+private func iso8601Date(_ value: String) -> Date {
+    let fractionalFormatter = ISO8601DateFormatter()
+    fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractionalFormatter.date(from: value) {
+        return date
+    }
+
+    let standardFormatter = ISO8601DateFormatter()
+    standardFormatter.formatOptions = [.withInternetDateTime]
+    return standardFormatter.date(from: value)!
 }

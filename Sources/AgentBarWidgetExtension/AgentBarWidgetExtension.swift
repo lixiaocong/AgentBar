@@ -174,7 +174,7 @@ struct AgentBarDesktopWidget: Widget {
             AgentBarDesktopWidgetView(entry: entry)
         }
         .configurationDisplayName("Agent Bar")
-        .description("See one Codex, Copilot, Gemini, Claude, or Junie account on your desktop.")
+        .description("See one Codex, Copilot, Gemini, Claude, Z.ai, or Junie account on your desktop.")
         .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }
@@ -196,8 +196,10 @@ struct AgentBarDesktopWidgetView: View {
     }
 
     var body: some View {
+        let accent = selectedProvider.map { providerStyle(for: $0.provider).tint } ?? Color.green
+
         ZStack {
-            widgetBackground
+            widgetBackground(accent: accent)
 
             if let selectedProvider {
                 providerContent(selectedProvider)
@@ -215,7 +217,7 @@ struct AgentBarDesktopWidgetView: View {
         }
         .foregroundStyle(palette.primaryText)
         .containerBackground(for: .widget) {
-            widgetBackground
+            widgetBackground(accent: accent)
         }
     }
 
@@ -223,8 +225,8 @@ struct AgentBarDesktopWidgetView: View {
     private func providerContent(_ state: AgentWidgetProviderState) -> some View {
         let metrics = displayMetrics(for: state)
 
-        VStack(alignment: .leading, spacing: 7) {
-            header(state)
+        VStack(alignment: .leading, spacing: 8) {
+            header(state, headlineMetric: metrics.first)
 
             if let error = state.errorMessage {
                 Text(error)
@@ -234,14 +236,21 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 0)
             } else if !metrics.isEmpty {
                 metricsStack(Array(metrics.prefix(2)))
-
-                if let snapshot = state.snapshot {
-                    widgetFooter(snapshot)
+                if let resetSummary = resetCreditsSummary(state.snapshot?.resetCredits) {
+                    Text(resetSummary)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(palette.secondaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
                 }
             } else if let snapshot = state.snapshot {
                 HStack(spacing: 8) {
                     if let context = snapshotContext(for: state, snapshot: snapshot) {
                         detailPill(label: context.label, value: context.value)
+                    }
+                    if let resetCredits = snapshot.resetCredits,
+                       resetCredits.hasAvailableCredits {
+                        detailPill(label: "", value: compactResetCreditCount(resetCredits.visibleAvailableCount))
                     }
                     detailPill(label: "Updated", value: snapshot.updatedAt.formatted(date: .omitted, time: .shortened))
                 }
@@ -264,29 +273,40 @@ struct AgentBarDesktopWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func header(_ state: AgentWidgetProviderState) -> some View {
+    private func header(
+        _ state: AgentWidgetProviderState,
+        headlineMetric: AgentQuotaMetric?
+    ) -> some View {
         let style = providerStyle(for: state.provider)
+        let headlineTint = headlineMetric.map(quotaTint(for:)) ?? style.tint
 
-        return HStack(alignment: .center, spacing: 8) {
+        return HStack(alignment: .center, spacing: 9) {
             providerIconBadge(style)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(state.provider.title)
-                        .font(.system(.headline, design: .rounded).weight(.semibold))
+                        .font(.system(.caption, design: .rounded).weight(.heavy))
+                        .foregroundStyle(style.tint)
+                        .textCase(.uppercase)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
-                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
                     if let plan = userFacingPlanLabel(state.snapshot?.planType) {
                         detailPill(label: "", value: plan)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+
+                    if let resetCredits = state.snapshot?.resetCredits,
+                       resetCredits.hasAvailableCredits {
+                        detailPill(label: "", value: compactResetCreditCount(resetCredits.visibleAvailableCount))
                             .fixedSize(horizontal: true, vertical: false)
                     }
                 }
 
                 if let accountLabel = AgentBarWidgetAccountValue.accountSubtitle(for: state) {
                     Text(accountLabel)
-                        .font(.callout.weight(.bold))
+                        .font(.system(.subheadline, design: .rounded).weight(.heavy))
                         .foregroundStyle(palette.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -296,9 +316,21 @@ struct AgentBarDesktopWidgetView: View {
 
             Spacer(minLength: 0)
 
-            Circle()
-                .fill(style.tint)
-                .frame(width: 7, height: 7)
+            if let headlineMetric {
+                VStack(alignment: .trailing, spacing: -1) {
+                    Text(headlineMetric.percentText)
+                        .font(.system(.title, design: .rounded).weight(.heavy))
+                        .monospacedDigit()
+                        .foregroundStyle(headlineTint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+
+                    Text("left")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(palette.secondaryText)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+            }
         }
     }
 
@@ -322,8 +354,8 @@ struct AgentBarDesktopWidgetView: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 QuotaMetricTitle(title: metric.title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(palette.secondaryText)
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundStyle(palette.primaryText)
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .help(metric.title)
 
@@ -337,7 +369,7 @@ struct AgentBarDesktopWidgetView: View {
                     .layoutPriority(3)
             }
 
-            quotaBar(value: metric.remainingPercent, tint: tint)
+            quotaBar(metric: metric, tint: tint)
 
             HStack(spacing: 8) {
                 Text(metric.usedLabel)
@@ -346,7 +378,7 @@ struct AgentBarDesktopWidgetView: View {
                 Spacer(minLength: 4)
 
                 if let resetsAt = metric.resetsAt {
-                    Text("Reset \(resetsAt.formatted(date: .omitted, time: .shortened))")
+                    Text("Resets \(resetsAt.formatted(date: .omitted, time: .shortened))")
                         .lineLimit(1)
                 }
             }
@@ -355,20 +387,59 @@ struct AgentBarDesktopWidgetView: View {
         }
     }
 
-    private func quotaBar(value: Double, tint: Color) -> some View {
-        let progress = min(max(value, 0), 100) / 100
+    private func resetCreditsSummary(_ resetCredits: AgentQuotaResetCredits?) -> String? {
+        guard let resetCredits,
+              resetCredits.hasAvailableCredits else {
+            return nil
+        }
+
+        let dates = resetCredits.availableCredits
+            .prefix(3)
+            .compactMap(\.expiresAt)
+            .map { $0.formatted(date: .abbreviated, time: .omitted) }
+
+        guard !dates.isEmpty else {
+            return "\(compactResetCreditCount(resetCredits.visibleAvailableCount)) available"
+        }
+
+        return "\(compactResetCreditCount(resetCredits.visibleAvailableCount)) expiring \(dates.joined(separator: ", "))"
+    }
+
+    private func compactResetCreditCount(_ count: Int) -> String {
+        count == 1 ? "1 reset" : "\(count) resets"
+    }
+
+    private func quotaBar(metric: AgentQuotaMetric, tint: Color) -> some View {
+        let progress = min(max(metric.remainingPercent, 0), 100) / 100
+        let baseline = AgentQuotaDisplayColor.baselineRemainingPercent(
+            resetsAt: metric.resetsAt,
+            windowDuration: metric.windowDuration
+        ).map { min(max($0, 0), 100) / 100 }
 
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(palette.track)
+                    .frame(height: 5)
 
                 Capsule()
                     .fill(tint)
                     .frame(width: max(3, proxy.size.width * progress))
+                    .frame(height: 5)
+
+                if let baseline {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(palette.primaryText.opacity(0.78))
+                        .frame(width: 2, height: 8)
+                        .position(
+                            x: min(max(1, proxy.size.width * baseline), max(1, proxy.size.width - 1)),
+                            y: proxy.size.height / 2
+                        )
+                        .accessibilityHidden(true)
+                }
             }
         }
-        .frame(height: 5)
+        .frame(height: 8)
     }
 
     private func detailPill(label: String, value: String) -> some View {
@@ -382,7 +453,7 @@ struct AgentBarDesktopWidgetView: View {
                 .font(.system(.caption, design: .rounded).weight(.bold))
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .background(palette.pillBackground, in: Capsule())
     }
 
@@ -463,17 +534,10 @@ struct AgentBarDesktopWidgetView: View {
             return []
         }
 
-        guard state.provider == .codex else {
-            return metrics
-        }
-
         return metrics.enumerated()
             .sorted { lhs, rhs in
-                let leftPriority = codexMetricDisplayPriority(lhs.element)
-                let rightPriority = codexMetricDisplayPriority(rhs.element)
-
-                if leftPriority != rightPriority {
-                    return leftPriority < rightPriority
+                if lhs.element.remainingPercent != rhs.element.remainingPercent {
+                    return lhs.element.remainingPercent < rhs.element.remainingPercent
                 }
 
                 return lhs.offset < rhs.offset
@@ -481,16 +545,8 @@ struct AgentBarDesktopWidgetView: View {
             .map(\.element)
     }
 
-    private func codexMetricDisplayPriority(_ metric: AgentQuotaMetric) -> Int {
-        isCodexWeeklyMetric(metric) ? 0 : 1
-    }
-
-    private func isCodexWeeklyMetric(_ metric: AgentQuotaMetric) -> Bool {
-        metric.id == "window-10080" || metric.title.localizedCaseInsensitiveContains("7 day")
-    }
-
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
-        quotaTint(for: metric.remainingPercent)
+        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: metric))
     }
 
     private func compactRemainingLabel(_ label: String) -> String {
@@ -509,20 +565,16 @@ struct AgentBarDesktopWidgetView: View {
         return normalized
     }
 
-    private func quotaTint(for remainingPercent: Double) -> Color {
-        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
-    }
-
     private func providerIconBadge(_ style: WidgetProviderStyle) -> some View {
         Image(style.assetName)
             .resizable()
             .renderingMode(.original)
             .scaledToFit()
-            .frame(width: 18, height: 18)
-            .frame(width: 28, height: 28)
-            .background(palette.pillBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .frame(width: 20, height: 20)
+            .frame(width: 34, height: 34)
+            .background(palette.pillBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .stroke(style.tint.opacity(0.20), lineWidth: 1)
             }
     }
@@ -537,15 +589,26 @@ struct AgentBarDesktopWidgetView: View {
             return WidgetProviderStyle(assetName: "ProviderLogoGemini", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.healthy))
         case .claude:
             return WidgetProviderStyle(assetName: "ProviderLogoClaude", tint: Color.purple)
+        case .zai:
+            return WidgetProviderStyle(assetName: "ProviderLogoZAI", tint: Color.blue)
         case .junie:
             return WidgetProviderStyle(assetName: "ProviderLogoJunie", tint: Color(agentQuotaRGB: AgentQuotaDisplayColor.low))
         }
     }
 
-    private var widgetBackground: some View {
+    private func widgetBackground(accent: Color) -> some View {
         ZStack {
             LinearGradient(
                 colors: [palette.backgroundTop, palette.backgroundBottom],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            LinearGradient(
+                colors: [
+                    accent.opacity(colorScheme == .dark ? 0.20 : 0.12),
+                    accent.opacity(colorScheme == .dark ? 0.08 : 0.04)
+                ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -678,7 +741,30 @@ private extension AgentWidgetState {
                             resetsAt: nil
                         )
                     ],
-                    updatedAt: Date(timeIntervalSince1970: 1_776_240_000)
+                    updatedAt: Date(timeIntervalSince1970: 1_776_240_000),
+                    resetCredits: AgentQuotaResetCredits(
+                        availableCount: 3,
+                        credits: [
+                            AgentQuotaResetCredit(
+                                idSuffix: "e2907349",
+                                status: "available",
+                                resetType: "codex_rate_limits",
+                                expiresAt: Date(timeIntervalSince1970: 1_784_334_827)
+                            ),
+                            AgentQuotaResetCredit(
+                                idSuffix: "0284334e",
+                                status: "available",
+                                resetType: "codex_rate_limits",
+                                expiresAt: Date(timeIntervalSince1970: 1_785_109_119)
+                            ),
+                            AgentQuotaResetCredit(
+                                idSuffix: "983b2c15",
+                                status: "available",
+                                resetType: "codex_rate_limits",
+                                expiresAt: Date(timeIntervalSince1970: 1_785_527_970)
+                            ),
+                        ]
+                    )
                 ),
                 errorMessage: nil,
                 isAvailable: true

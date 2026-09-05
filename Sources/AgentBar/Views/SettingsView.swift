@@ -7,14 +7,29 @@ import AgentBarCore
 
 struct SettingsView: View {
     let model: AppModel
+    let historyManager: QuotaHistoryManager
+    let openHistoryAction: () -> Void
     private let providerColumns = [
         GridItem(.adaptive(minimum: 260), alignment: .top)
     ]
-    @State private var addAccountProvider: AgentProviderKind?
     @State private var isAddingJunieToken = false
+    @State private var isAddingZAICredential = false
+    @State private var isClearingHistory = false
+    @State private var isConfirmingHistoryRebuild = false
+
+    init(
+        model: AppModel,
+        historyManager: QuotaHistoryManager = .shared,
+        openHistoryAction: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        self.historyManager = historyManager
+        self.openHistoryAction = openHistoryAction
+    }
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var historyManager = historyManager
 
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -51,6 +66,54 @@ struct SettingsView: View {
                     .padding(4)
                 }
 
+                GroupBox("History") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Record quota history", isOn: $historyManager.isEnabled)
+
+                        LabeledContent("Sampling", value: "Every 15 minutes + changes")
+                            .font(.caption)
+
+                        LabeledContent("Samples", value: historyManager.stats.sampleCount.formatted())
+                            .font(.caption)
+
+                        LabeledContent("Oldest sample", value: oldestHistorySampleText)
+                            .font(.caption)
+
+                        LabeledContent("Database size", value: historyDatabaseSizeText)
+                            .font(.caption)
+
+                        if let error = historyManager.lastError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Button("Rebuild History Database...") {
+                                isConfirmingHistoryRebuild = true
+                            }
+                            .disabled(historyManager.isMaintaining)
+                        }
+
+                        HStack(spacing: 10) {
+                            Button("Open History...") {
+                                openHistoryAction()
+                            }
+
+                            Button("Clear History...") {
+                                isClearingHistory = true
+                            }
+                            .disabled(historyManager.stats.sampleCount == 0 || historyManager.isMaintaining)
+
+                            if historyManager.isMaintaining {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+
                 LazyVGrid(columns: providerColumns, alignment: .leading, spacing: 14) {
                     ForEach(AgentProviderKind.allCases) { provider in
                         providerSettingsSection(provider)
@@ -60,11 +123,29 @@ struct SettingsView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .sheet(item: $addAccountProvider) { provider in
-            AddAccountSheet(provider: provider, model: model)
-        }
         .sheet(isPresented: $isAddingJunieToken) {
             AddJunieTokenSheet(model: model)
+        }
+        .sheet(isPresented: $isAddingZAICredential) {
+            AddZAICodingPlanCredentialSheet(model: model)
+        }
+        .sheet(isPresented: $isClearingHistory) {
+            QuotaHistoryCleanupSheet(manager: historyManager)
+        }
+        .confirmationDialog(
+            "Rebuild History Database?",
+            isPresented: $isConfirmingHistoryRebuild
+        ) {
+            Button("Rebuild Database", role: .destructive) {
+                Task { await historyManager.rebuildDatabase() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes all quota history and creates a new database.")
+        }
+        .onAppear {
+            historyManager.start()
+            historyManager.refreshStats()
         }
     }
 
@@ -82,13 +163,32 @@ struct SettingsView: View {
                 }
 
                 if model.supportsBrowserSignIn(for: provider) {
-                    Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
-                        model.signInWithBrowser(
-                            for: provider,
-                            forceAccountSelection: provider == .codex || hasConfiguredAccounts
-                        )
+                    HStack(spacing: 8) {
+                        Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
+                            model.signInWithBrowser(
+                                for: provider,
+                                forceAccountSelection: provider == .codex || hasConfiguredAccounts
+                            )
+                        }
+                        .disabled(model.isLoginInProgress(for: provider))
+
+                        Button {
+                            model.copyBrowserSignInURL(
+                                for: provider,
+                                forceAccountSelection: provider == .codex || hasConfiguredAccounts
+                            )
+                        } label: {
+                            Label("Copy URL", systemImage: "doc.on.doc")
+                        }
+                        .disabled(!model.canCopyBrowserSignInURL(for: provider))
+                        .help("Copy the sign-in URL without opening the default browser")
+
+                        if model.isLoginInProgress(for: provider) {
+                            Button("Cancel", role: .cancel) {
+                                model.cancelBrowserSignIn(for: provider)
+                            }
+                        }
                     }
-                    .disabled(model.isLoginInProgress(for: provider))
 
                     if let message = model.loginMessage(for: provider) {
                         Text(message)
@@ -107,9 +207,9 @@ struct SettingsView: View {
                     Button(hasConfiguredAccounts ? "Add Another Junie Token..." : "Add Junie Token...") {
                         isAddingJunieToken = true
                     }
-                } else if provider == .claude {
-                    Button(hasConfiguredAccounts ? "Add Another Auth Directory..." : "Add Claude Auth Directory...") {
-                        addAccountProvider = provider
+                } else if provider == .zai {
+                    Button(hasConfiguredAccounts ? "Add Another Coding Plan..." : "Add Coding Plan...") {
+                        isAddingZAICredential = true
                     }
                 }
             }
@@ -158,7 +258,7 @@ struct SettingsView: View {
                     .disabled(model.isCodexReconnectInProgress(status.account))
                 }
 
-                Button("Sign Out") {
+                Button("Remove") {
                     model.removeConfiguredAccount(status.account)
                 }
             }
@@ -211,6 +311,8 @@ struct SettingsView: View {
             return "Gemini Code Assist"
         case .claude:
             return "Claude Code"
+        case .zai:
+            return "Z.ai Coding Plan"
         case .junie:
             return "Junie"
         }
@@ -224,33 +326,82 @@ struct SettingsView: View {
         return hasConfiguredAccounts ? "Add Another Account…" : "Sign In with Browser…"
     }
 
+    private var oldestHistorySampleText: String {
+        guard let oldest = historyManager.stats.oldestSampleAt else { return "None" }
+        return oldest.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var historyDatabaseSizeText: String {
+        ByteCountFormatter.string(
+            fromByteCount: historyManager.stats.databaseSizeBytes,
+            countStyle: .file
+        )
+    }
+
 }
 
-private struct AddAccountSheet: View {
-    let provider: AgentProviderKind
-    let model: AppModel
+private struct QuotaHistoryCleanupSheet: View {
+    let manager: QuotaHistoryManager
 
     @Environment(\.dismiss) private var dismiss
-    @State private var path = ""
+    @State private var daysText = "90"
+    @State private var isConfirmingOlderDeletion = false
+    @State private var isConfirmingAllDeletion = false
     @State private var errorMessage: String?
 
+    private var days: Int? {
+        guard let value = Int(daysText), value > 0 else { return nil }
+        return value
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Add \(provider.title) Account")
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Clear Quota History")
                 .font(.title3.weight(.semibold))
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Directory path")
-                    .font(.caption.weight(.semibold))
+            Text("History is kept permanently until you remove it here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
-                TextField(
-                    "",
-                    text: $path,
-                    prompt: Text(provider.defaultAccountDirectoryDisplayPath)
-                )
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
+            HStack(spacing: 10) {
+                Text("Delete samples older than")
+
+                TextField("Days", text: $daysText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 72)
+
+                Text("days")
+
+                Spacer()
+
+                Button("Delete...", role: .destructive) {
+                    isConfirmingOlderDeletion = true
+                }
+                .disabled(days == nil || manager.isMaintaining)
+            }
+
+            Divider()
+
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Delete all history")
+                        .fontWeight(.semibold)
+                    Text("This cannot be undone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Delete All...", role: .destructive) {
+                    isConfirmingAllDeletion = true
+                }
+                .disabled(manager.isMaintaining)
+            }
+
+            if manager.isMaintaining {
+                ProgressView("Compacting database...")
+                    .controlSize(.small)
             }
 
             if let errorMessage {
@@ -260,45 +411,50 @@ private struct AddAccountSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 10) {
-                Button("Browse…") {
-                    if let directoryURL = model.selectAccountDirectory(for: provider) {
-                        path = NSString(string: directoryURL.path).abbreviatingWithTildeInPath
-                        errorMessage = nil
-                    }
-                }
-
+            HStack {
                 Spacer()
-
-                Button("Cancel", role: .cancel) {
-                    dismiss()
-                }
-
-                Button("Add") {
-                    submit()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(manager.isMaintaining)
             }
         }
         .padding(20)
         .frame(width: 520)
         .buttonStyle(.bordered)
         .controlSize(.regular)
+        .confirmationDialog(
+            "Delete Old Quota History?",
+            isPresented: $isConfirmingOlderDeletion
+        ) {
+            Button("Delete", role: .destructive) {
+                guard let days else { return }
+                perform { await manager.clearHistory(olderThanDays: days) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Samples older than \(days ?? 0) days will be permanently deleted.")
+        }
+        .confirmationDialog(
+            "Delete All Quota History?",
+            isPresented: $isConfirmingAllDeletion
+        ) {
+            Button("Delete All", role: .destructive) {
+                perform { await manager.clearAllHistory() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every recorded account and quota window will be permanently deleted.")
+        }
     }
 
-    private func submit() {
-        switch model.addConfiguredAccountDirectory(path: path, for: provider) {
-        case .added:
-            dismiss()
-        case .emptyPath:
-            errorMessage = "Enter a directory path."
-        case .duplicate:
-            errorMessage = "That directory is already configured."
-        case .browserLoginRequired:
-            errorMessage = "\(provider.title) accounts must be added with browser sign-in."
-        case .credentialsFileMissing(let path):
-            errorMessage = "No credentials file found at \(path)."
+    private func perform(_ operation: @escaping @MainActor () async -> Bool) {
+        errorMessage = nil
+        Task {
+            if await operation() {
+                dismiss()
+            } else {
+                errorMessage = manager.lastError ?? "History could not be cleared."
+            }
         }
     }
 }
@@ -371,4 +527,77 @@ private struct AddJunieTokenSheet: View {
             errorMessage = message
         }
     }
+}
+
+private struct AddZAICodingPlanCredentialSheet: View {
+    let model: AppModel
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var token = ""
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Z.ai Coding Plan")
+                .font(.title3.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Coding Plan token")
+                    .font(.caption.weight(.semibold))
+
+                SecureField(
+                    "",
+                    text: $token,
+                    prompt: Text("Z.ai Coding Plan token")
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                Button("Open Usage Page") {
+                    NSWorkspace.shared.open(ZAIQuotaService.codingPlanUsagePageURL)
+                }
+
+                Spacer()
+
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+
+                Button("Add") {
+                    submit()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+    }
+
+    private func submit() {
+        switch model.addZAICodingPlanCredential(token) {
+        case .added:
+            dismiss()
+        case .emptyToken:
+            errorMessage = "Enter a Z.ai Coding Plan token."
+        case .duplicate:
+            errorMessage = "That Z.ai account is already configured."
+        case .invalidBaseURL:
+            errorMessage = "Only the international Z.ai host is supported."
+        case .saveFailed(let message):
+            errorMessage = message
+        }
+    }
+
 }

@@ -9,17 +9,23 @@ enum MenuBarStatusImage {
         let provider: AgentProviderKind?
         let label: String
         let remainingPercent: Double?
+        let resetsAt: Date?
+        let windowDuration: TimeInterval?
         let isError: Bool
 
         init(
             provider: AgentProviderKind?,
             label: String? = nil,
             remainingPercent: Double?,
+            resetsAt: Date? = nil,
+            windowDuration: TimeInterval? = nil,
             isError: Bool = false
         ) {
             self.provider = provider
             self.label = label ?? Self.defaultLabel(for: provider)
             self.remainingPercent = remainingPercent
+            self.resetsAt = resetsAt
+            self.windowDuration = windowDuration
             self.isError = isError
         }
 
@@ -33,6 +39,8 @@ enum MenuBarStatusImage {
                 return "gm"
             case .claude:
                 return "cl"
+            case .zai:
+                return "za"
             case .junie:
                 return "jn"
             case nil:
@@ -133,6 +141,35 @@ enum MenuBarStatusImage {
         let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: 1.6, yRadius: 1.6)
         fillColor(for: bar).setFill()
         fillPath.fill()
+
+        if let baseline = AgentQuotaDisplayColor.baselineRemainingPercent(
+            resetsAt: bar.resetsAt,
+            windowDuration: bar.windowDuration
+        ) {
+            drawBaselineMarker(in: rect, baselinePercent: baseline)
+        }
+    }
+
+    private static func drawBaselineMarker(
+        in rect: NSRect,
+        baselinePercent: Double
+    ) {
+        let fraction = min(max(CGFloat(baselinePercent / 100), 0), 1)
+        let x = min(max(rect.minX + 0.5, rect.minX + rect.width * fraction), rect.maxX - 0.5)
+
+        let outline = NSBezierPath()
+        outline.lineWidth = min(2, max(1, rect.height * 0.5))
+        outline.move(to: NSPoint(x: x, y: rect.minY - 0.5))
+        outline.line(to: NSPoint(x: x, y: rect.maxY + 0.5))
+        NSColor.windowBackgroundColor.withAlphaComponent(0.85).setStroke()
+        outline.stroke()
+
+        let marker = NSBezierPath()
+        marker.lineWidth = 1
+        marker.move(to: NSPoint(x: x, y: rect.minY - 0.5))
+        marker.line(to: NSPoint(x: x, y: rect.maxY + 0.5))
+        NSColor.labelColor.withAlphaComponent(0.9).setStroke()
+        marker.stroke()
     }
 
     private static func drawUnavailableMarker(
@@ -203,13 +240,19 @@ enum MenuBarStatusImage {
             return NSColor.systemRed.withAlphaComponent(0.9)
         }
 
-        return progressColor(for: bar.remainingPercent).withAlphaComponent(bar.remainingPercent == nil ? 0.5 : 1)
+        return progressColor(for: bar).withAlphaComponent(bar.remainingPercent == nil ? 0.5 : 1)
     }
 
-    private static func progressColor(for remainingPercent: Double?) -> NSColor {
-        guard let remainingPercent else { return .labelColor }
+    private static func progressColor(for bar: Bar) -> NSColor {
+        guard let remainingPercent = bar.remainingPercent else { return .labelColor }
 
-        return color(from: AgentQuotaDisplayColor.color(for: remainingPercent))
+        return color(
+            from: AgentQuotaDisplayColor.color(
+                for: remainingPercent,
+                resetsAt: bar.resetsAt,
+                windowDuration: bar.windowDuration
+            )
+        )
     }
 
     private static func color(from rgb: AgentQuotaDisplayRGB) -> NSColor {

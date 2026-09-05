@@ -100,7 +100,11 @@ public sealed class TrayIconRenderer : ITrayIconRenderer
 
     private static Color CenterTextColor(TrayStatusBar status)
     {
-        if (status.RemainingPercent is >= 75)
+        if (status.RemainingPercent is { } remaining &&
+            AgentQuotaDisplayColor.StateFor(
+                remaining,
+                status.ResetsAt,
+                status.WindowDuration) == AgentQuotaDisplayState.Healthy)
         {
             return Color.FromArgb(245, 22, 52, 33);
         }
@@ -120,7 +124,10 @@ public sealed class TrayIconRenderer : ITrayIconRenderer
             return Color.FromArgb(210, 210, 214, 220);
         }
 
-        var rgb = AgentQuotaDisplayColor.ForRemainingPercent(status.RemainingPercent.Value);
+        var rgb = AgentQuotaDisplayColor.For(
+            status.RemainingPercent.Value,
+            status.ResetsAt,
+            status.WindowDuration);
         return Color.FromArgb(255, (int)(rgb.Red * 255), (int)(rgb.Green * 255), (int)(rgb.Blue * 255));
     }
 

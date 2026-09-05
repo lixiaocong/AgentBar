@@ -5,6 +5,7 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
     case githubCopilot
     case gemini
     case claude
+    case zai
     case junie
 
     public var id: String { rawValue }
@@ -17,6 +18,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return .gemini
         case AgentProviderKind.claude.rawValue:
             return .claude
+        case AgentProviderKind.zai.rawValue, "z.ai", "zAI", "glm", "zhipu":
+            return .zai
         case AgentProviderKind.junie.rawValue:
             return .junie
         case AgentProviderKind.codex.rawValue, "codexCloudAPI", "localCodex", "openAIAdminAPI":
@@ -36,6 +39,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "Gemini"
         case .claude:
             return "Claude"
+        case .zai:
+            return "Z.ai"
         case .junie:
             return "Junie"
         }
@@ -44,13 +49,15 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
     public var subtitle: String {
         switch self {
         case .codex:
-            return "Reads the same 5-hour and weekly usage data shown on the ChatGPT Codex usage page."
+            return "Reads Codex usage windows and banked reset credits shown by ChatGPT."
         case .githubCopilot:
             return "Tracks monthly GitHub Copilot premium-request usage for one personal account."
         case .gemini:
             return "Tracks per-model request quota for Gemini Code Assist (shared with Antigravity IDE)."
         case .claude:
-            return "Detects the local Claude Code account from auth.json. Quota windows are not exposed by AgentBar yet."
+            return "Tracks Claude Code session and weekly usage windows, including per-model limits."
+        case .zai:
+            return "Tracks GLM Coding Plan quota windows from Z.ai's usage monitor API."
         case .junie:
             return "Tracks the Junie by JetBrains account linked with an AgentBar-owned Junie API token."
         }
@@ -66,6 +73,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "Gemini"
         case .claude:
             return "Claude"
+        case .zai:
+            return "Z.ai"
         case .junie:
             return "Junie"
         }
@@ -81,6 +90,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return "G"
         case .claude:
             return "Cl"
+        case .zai:
+            return "Z"
         case .junie:
             return "J"
         }
@@ -96,6 +107,8 @@ public enum AgentProviderKind: String, CaseIterable, Identifiable, Codable, Send
             return .seconds(30)
         case .claude:
             return .seconds(30)
+        case .zai:
+            return .seconds(30)
         case .junie:
             return .seconds(60)
         }
@@ -107,18 +120,20 @@ public struct AgentProviderAvailability: Sendable, Equatable {
     public var githubCopilot: Bool
     public var gemini: Bool
     public var claude: Bool
+    public var zai: Bool
     public var junie: Bool
 
-    public init(codex: Bool, githubCopilot: Bool, gemini: Bool, claude: Bool, junie: Bool = false) {
+    public init(codex: Bool, githubCopilot: Bool, gemini: Bool, claude: Bool, zai: Bool = false, junie: Bool = false) {
         self.codex = codex
         self.githubCopilot = githubCopilot
         self.gemini = gemini
         self.claude = claude
+        self.zai = zai
         self.junie = junie
     }
 
-    public static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false, junie: false)
-    public static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true, junie: true)
+    public static let none = AgentProviderAvailability(codex: false, githubCopilot: false, gemini: false, claude: false, zai: false, junie: false)
+    public static let all = AgentProviderAvailability(codex: true, githubCopilot: true, gemini: true, claude: true, zai: true, junie: true)
 
     public var availableProviders: [AgentProviderKind] {
         AgentProviderKind.allCases.filter(isAvailable)
@@ -134,6 +149,8 @@ public struct AgentProviderAvailability: Sendable, Equatable {
             return gemini
         case .claude:
             return claude
+        case .zai:
+            return zai
         case .junie:
             return junie
         }
@@ -198,6 +215,7 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
     public let sourceSummary: String
     public let metrics: [AgentQuotaMetric]
     public let updatedAt: Date
+    public let resetCredits: AgentQuotaResetCredits?
 
     public init(
         provider: AgentProviderKind,
@@ -207,7 +225,8 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
         modelName: String?,
         sourceSummary: String,
         metrics: [AgentQuotaMetric],
-        updatedAt: Date
+        updatedAt: Date,
+        resetCredits: AgentQuotaResetCredits? = nil
     ) {
         self.provider = provider
         self.accountLabel = accountLabel
@@ -217,12 +236,92 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
         self.sourceSummary = sourceSummary
         self.metrics = metrics
         self.updatedAt = updatedAt
+        self.resetCredits = resetCredits
     }
 
     public var highlightMetric: AgentQuotaMetric? {
         metrics.max { lhs, rhs in
             lhs.usedPercent < rhs.usedPercent
         } ?? metrics.first
+    }
+}
+
+public struct AgentQuotaResetCredits: Codable, Sendable, Equatable {
+    public let availableCount: Int
+    public let credits: [AgentQuotaResetCredit]
+
+    public init(
+        availableCount: Int,
+        credits: [AgentQuotaResetCredit] = []
+    ) {
+        self.availableCount = max(0, availableCount)
+        self.credits = credits
+    }
+
+    public var visibleAvailableCount: Int {
+        max(availableCount, availableCredits.count)
+    }
+
+    public var hasAvailableCredits: Bool {
+        visibleAvailableCount > 0
+    }
+
+    public var availableCredits: [AgentQuotaResetCredit] {
+        credits
+            .filter(\.isAvailable)
+            .sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case let (left?, right?):
+                    return left < right
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return lhs.idSuffix < rhs.idSuffix
+                }
+            }
+    }
+
+    public var nextExpiringCredit: AgentQuotaResetCredit? {
+        availableCredits.first
+    }
+}
+
+public struct AgentQuotaResetCredit: Codable, Sendable, Equatable, Identifiable {
+    public let idSuffix: String
+    public let status: String
+    public let resetType: String
+    public let expiresAt: Date?
+    public let grantedAt: Date?
+    public let redeemedAt: Date?
+    public let redeemStartedAt: Date?
+
+    public init(
+        idSuffix: String,
+        status: String,
+        resetType: String,
+        expiresAt: Date?,
+        grantedAt: Date? = nil,
+        redeemedAt: Date? = nil,
+        redeemStartedAt: Date? = nil
+    ) {
+        self.idSuffix = idSuffix
+        self.status = status
+        self.resetType = resetType
+        self.expiresAt = expiresAt
+        self.grantedAt = grantedAt
+        self.redeemedAt = redeemedAt
+        self.redeemStartedAt = redeemStartedAt
+    }
+
+    public var id: String {
+        let expiration = expiresAt.map { String(Int($0.timeIntervalSince1970)) } ?? "unknown"
+        return "\(idSuffix)-\(expiration)"
+    }
+
+    public var isAvailable: Bool {
+        status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "available"
     }
 }
 
@@ -310,5 +409,97 @@ public struct AgentQuotaMetric: Codable, Sendable, Equatable, Identifiable {
 
             return "\(windowMinutes) minute window"
         }
+    }
+}
+
+public struct AgentQuotaMetricAggregate: Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let accountCount: Int
+    public let remainingPercent: Double
+    public let isUnlimited: Bool
+    public let resetsAt: Date?
+
+    public init(
+        id: String,
+        title: String,
+        accountCount: Int,
+        remainingPercent: Double,
+        isUnlimited: Bool,
+        resetsAt: Date?
+    ) {
+        self.id = id
+        self.title = title
+        self.accountCount = accountCount
+        self.remainingPercent = remainingPercent
+        self.isUnlimited = isUnlimited
+        self.resetsAt = resetsAt
+    }
+
+    public var displayValue: String {
+        if isUnlimited { return "Unlimited" }
+
+        let roundedToInteger = remainingPercent.rounded()
+        if abs(remainingPercent - roundedToInteger) < 0.005 {
+            return "\(Int(roundedToInteger))%"
+        }
+
+        return String(format: "%.2f%%", remainingPercent)
+    }
+}
+
+public enum AgentQuotaMetricAggregation {
+    /// Returns aggregate quota percentages only when every loaded account
+    /// exposes the same metric ID and title. Missing data is not treated as zero.
+    public static func completeAggregates(
+        for snapshots: [AgentQuotaSnapshot]
+    ) -> [AgentQuotaMetricAggregate] {
+        guard snapshots.count > 1,
+              let firstSnapshot = snapshots.first else {
+            return []
+        }
+
+        return firstSnapshot.metrics.compactMap { firstMetric in
+            let normalizedTitle = normalizeTitle(firstMetric.title)
+            let matchingMetrics = snapshots.compactMap { snapshot in
+                snapshot.metrics.first { metric in
+                    metric.id == firstMetric.id && normalizeTitle(metric.title) == normalizedTitle
+                }
+            }
+
+            guard matchingMetrics.count == snapshots.count else {
+                return nil
+            }
+
+            let isUnlimited = matchingMetrics.contains(where: isUnlimitedMetric)
+            let summedRemainingPercent = matchingMetrics.reduce(0) { total, metric in
+                total + min(max(metric.remainingPercent, 0), 100)
+            }
+            let remainingPercent = summedRemainingPercent / Double(snapshots.count)
+            let resetsAt = matchingMetrics.compactMap(\.resetsAt).min()
+
+            return AgentQuotaMetricAggregate(
+                id: firstMetric.id,
+                title: firstMetric.title,
+                accountCount: snapshots.count,
+                remainingPercent: remainingPercent,
+                isUnlimited: isUnlimited,
+                resetsAt: resetsAt
+            )
+        }
+    }
+
+    private static func normalizeTitle(_ title: String) -> String {
+        title
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    private static func isUnlimitedMetric(_ metric: AgentQuotaMetric) -> Bool {
+        metric.remainingLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare("Unlimited") == .orderedSame ||
+            metric.usedLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare("Unlimited") == .orderedSame
     }
 }

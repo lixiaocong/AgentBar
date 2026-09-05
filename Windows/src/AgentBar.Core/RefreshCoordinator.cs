@@ -117,18 +117,12 @@ public sealed class RefreshCoordinator(
     public async Task RemoveAccountAsync(string accountId, CancellationToken cancellationToken = default)
     {
         var settings = (await settingsStore.LoadAsync(cancellationToken)).Normalized();
-        var account = settings.Accounts.FirstOrDefault(candidate => string.Equals(candidate.Id, accountId, StringComparison.OrdinalIgnoreCase));
         var updated = settings with
         {
             Accounts = settings.Accounts.Where(candidate => !string.Equals(candidate.Id, accountId, StringComparison.OrdinalIgnoreCase)).ToArray(),
             MenuBarAccountIds = settings.MenuBarAccountIds.Where(id => !string.Equals(id, accountId, StringComparison.OrdinalIgnoreCase)).ToArray()
         };
         await settingsStore.SaveAsync(updated, cancellationToken);
-
-        if (account is not null && account.Provider is not AgentProviderKind.Claude)
-        {
-            await authStore.DeleteAsync(account.Provider, LocalAccountIdFromDirectory(account), cancellationToken);
-        }
 
         await InitializeAsync(cancellationToken);
     }
@@ -407,10 +401,13 @@ public sealed class RefreshCoordinator(
                 return new TrayStatusBar(status.Provider, status.Provider.MenuBarShortPrefix(), null, true);
             }
 
+            var metric = status.Snapshot?.HighlightMetric;
             return new TrayStatusBar(
                 status.Provider,
                 status.Provider.MenuBarShortPrefix(),
-                status.Snapshot?.HighlightMetric?.RemainingPercent);
+                metric?.RemainingPercent,
+                ResetsAt: metric?.ResetsAt,
+                WindowDuration: metric?.WindowDuration);
         }).ToArray();
     }
 

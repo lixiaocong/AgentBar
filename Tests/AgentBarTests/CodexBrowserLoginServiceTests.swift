@@ -21,6 +21,31 @@ func codexLoginAlwaysRequestsFreshLoginConsent() throws {
 
 @Test
 @MainActor
+func claudeLoginAuthorizeURLCarriesPKCEAndState() throws {
+    let url = try ClaudeBrowserLoginService().buildAuthorizeURL(
+        redirectURI: "http://localhost:54546/callback",
+        codeChallenge: "challenge-value",
+        state: "state-value"
+    )
+
+    let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+    let items = Dictionary(
+        uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") }
+    )
+
+    #expect(components.host == "platform.claude.com")
+    #expect(components.path == "/oauth/authorize")
+    #expect(items["response_type"] == "code")
+    #expect(items["client_id"] == ClaudeOAuthConfiguration.clientID)
+    #expect(items["redirect_uri"] == "http://localhost:54546/callback")
+    #expect(items["code_challenge"] == "challenge-value")
+    #expect(items["code_challenge_method"] == "S256")
+    #expect(items["state"] == "state-value")
+    #expect(items["scope"] == "user:profile user:inference")
+}
+
+@Test
+@MainActor
 func geminiLoginCanForceAccountSelection() throws {
     let url = try GeminiBrowserLoginService(oauthClientProvider: {
         GeminiOAuthClientConfiguration(

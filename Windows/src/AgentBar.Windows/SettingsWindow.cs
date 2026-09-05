@@ -3,7 +3,6 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using AgentBar.Core;
-using Forms = System.Windows.Forms;
 
 namespace AgentBar.Windows;
 
@@ -13,6 +12,7 @@ public sealed class SettingsWindow : Window
     private readonly CodexBrowserLoginService _codexLogin;
     private readonly GitHubCopilotBrowserLoginService _copilotLogin;
     private readonly GeminiBrowserLoginService _geminiLogin;
+    private readonly ClaudeBrowserLoginService _claudeLogin;
     private readonly System.Windows.Controls.ListBox _accounts = new();
     private readonly StackPanel _trayChecks = new();
     private readonly System.Windows.Controls.TextBox _junieToken = new();
@@ -23,12 +23,14 @@ public sealed class SettingsWindow : Window
         RefreshCoordinator coordinator,
         CodexBrowserLoginService codexLogin,
         GitHubCopilotBrowserLoginService copilotLogin,
-        GeminiBrowserLoginService geminiLogin)
+        GeminiBrowserLoginService geminiLogin,
+        ClaudeBrowserLoginService claudeLogin)
     {
         _coordinator = coordinator;
         _codexLogin = codexLogin;
         _copilotLogin = copilotLogin;
         _geminiLogin = geminiLogin;
+        _claudeLogin = claudeLogin;
         Title = "AgentBar Settings";
         Width = 620;
         SizeToContent = SizeToContent.Height;
@@ -68,7 +70,7 @@ public sealed class SettingsWindow : Window
         _accounts.Height = 150;
         stack.Children.Add(_accounts);
 
-        var loginGrid = new UniformGrid { Columns = 3, Margin = new Thickness(0, 10, 0, 0) };
+        var loginGrid = new UniformGrid { Columns = 4, Margin = new Thickness(0, 10, 0, 0) };
         loginGrid.Children.Add(Button("Sign in Codex", async () => await RunAsync(async () =>
         {
             var session = await _codexLogin.SignInAsync();
@@ -84,6 +86,12 @@ public sealed class SettingsWindow : Window
         loginGrid.Children.Add(Button("Sign in Gemini", async () => await RunAsync(async () =>
         {
             var session = await _geminiLogin.SignInAsync();
+            await _coordinator.AddStoredAccountAsync(session);
+            await _coordinator.RefreshNowAsync();
+        })));
+        loginGrid.Children.Add(Button("Sign in Claude", async () => await RunAsync(async () =>
+        {
+            var session = await _claudeLogin.SignInAsync();
             await _coordinator.AddStoredAccountAsync(session);
             await _coordinator.RefreshNowAsync();
         })));
@@ -108,19 +116,6 @@ public sealed class SettingsWindow : Window
         stack.Children.Add(manualGrid);
 
         var accountButtons = new UniformGrid { Columns = 2, Margin = new Thickness(0, 8, 0, 18) };
-        accountButtons.Children.Add(Button("Add Claude Directory", async () => await RunAsync(async () =>
-        {
-            using var dialog = new Forms.FolderBrowserDialog
-            {
-                Description = "Choose a Claude config directory",
-                SelectedPath = AgentBarPaths.ClaudeDefaultDirectory
-            };
-            if (dialog.ShowDialog() == Forms.DialogResult.OK)
-            {
-                await _coordinator.AddClaudeDirectoryAsync(dialog.SelectedPath);
-                await _coordinator.RefreshNowAsync();
-            }
-        })));
         accountButtons.Children.Add(Button("Remove Selected", async () => await RunAsync(async () =>
         {
             if (_accounts.SelectedItem is AccountListItem item)

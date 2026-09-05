@@ -15,17 +15,34 @@ DERIVED_DATA_DIR="$PROJECT_DIR/.xcodebuild"
 XCODEPROJ="$PROJECT_DIR/${APP_NAME}.xcodeproj"
 ICON_SCRIPT="$PROJECT_DIR/scripts/generate-icons.swift"
 ICON_FILE="$PROJECT_DIR/Resources/AppIcon.icns"
+ICON_ASSET_CATALOG="$PROJECT_DIR/Resources/AppIcon.xcassets"
 APP_ENTITLEMENTS="$PROJECT_DIR/Resources/${APP_NAME}.entitlements"
 WIDGET_ENTITLEMENTS="$PROJECT_DIR/Resources/${APP_NAME}Widget.entitlements"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 PLISTBUDDY="/usr/libexec/PlistBuddy"
 BUILD_VERSION="$(date +%Y%m%d%H%M%S)"
 
+cleanup_generated_sources() {
+    rm -rf "$XCODEPROJ" "$ICON_ASSET_CATALOG"
+    rm -f "$ICON_FILE"
+    rmdir "$BUILD_DIR" 2>/dev/null || true
+}
+
+trap cleanup_generated_sources EXIT
+
 unregister_bundle() {
     local bundle_path="$1"
     if [ -x "$LSREGISTER" ] && [ -n "$bundle_path" ]; then
         "$LSREGISTER" -u "$bundle_path" >/dev/null 2>&1 || true
     fi
+}
+
+refresh_widgetkit_services() {
+    # Replacing a widget-bearing app can leave chronod/ControlCenter holding a
+    # stale extension descriptor and make the widget disappear from the gallery.
+    killall chronod >/dev/null 2>&1 || true
+    killall ControlCenter >/dev/null 2>&1 || true
+    killall NotificationCenter >/dev/null 2>&1 || true
 }
 
 cd "$PROJECT_DIR"
@@ -106,7 +123,28 @@ if [ -f "$ICON_FILE" ] && [ -d "$APP_BUNDLE/Contents/PlugIns" ]; then
     done < <(find "$APP_BUNDLE/Contents/PlugIns" -depth -name "*.appex" -print)
 fi
 
-SIGN_IDENTITY="${CODESIGN_IDENTITY:-WidgetDev}"
+resolve_sign_identity() {
+    if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+        printf '%s\n' "$CODESIGN_IDENTITY"
+        return
+    fi
+
+    # A development identity has a stable Team ID. Keychain can then trust the
+    # app across rebuilds instead of authorizing every new self-signed CDHash.
+    local apple_development_identity
+    apple_development_identity="$(
+        security find-identity -v -p codesigning 2>/dev/null |
+            awk '/"Apple Development:/ { print $2; exit }'
+    )"
+
+    if [ -n "$apple_development_identity" ]; then
+        printf '%s\n' "$apple_development_identity"
+    else
+        printf '%s\n' "WidgetDev"
+    fi
+}
+
+SIGN_IDENTITY="$(resolve_sign_identity)"
 
 if [ -d "$APP_BUNDLE/Contents/PlugIns" ]; then
     while IFS= read -r appex; do
@@ -116,6 +154,16 @@ fi
 
 echo "==> Signing app bundle with '$SIGN_IDENTITY'"
 codesign --force --sign "$SIGN_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$APP_BUNDLE"
+
+SIGNING_TEAM_ID="$(
+    codesign -dvv "$APP_BUNDLE" 2>&1 |
+        awk -F= '/^TeamIdentifier=/ { print $2; exit }'
+)"
+if [ -n "$SIGNING_TEAM_ID" ] && [ "$SIGNING_TEAM_ID" != "not set" ]; then
+    echo "==> Signed with stable Team ID $SIGNING_TEAM_ID"
+else
+    echo "WARNING: '$SIGN_IDENTITY' has no Team ID; Keychain may request access again after rebuilding."
+fi
 
 touch "$APP_BUNDLE"
 
@@ -163,6 +211,9 @@ fi
 
 touch "$INSTALL_PATH"
 
+echo "==> Refreshing WidgetKit services"
+refresh_widgetkit_services
+
 echo "==> Removing temporary app bundle"
 rm -rf "$APP_BUNDLE"
 
@@ -171,6 +222,10 @@ rm -rf "$DERIVED_DATA_DIR"
 
 echo "==> Launching $APP_NAME"
 open "$INSTALL_PATH"
+
+echo "==> Removing generated project sources"
+cleanup_generated_sources
+trap - EXIT
 
 echo "==> Done"
 echo "    Installed app: $INSTALL_PATH"

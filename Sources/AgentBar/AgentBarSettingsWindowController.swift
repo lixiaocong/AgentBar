@@ -7,8 +7,18 @@ import AgentBarCore
 
 @MainActor
 final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelegate {
-    init(model: AppModel) {
-        let rootView = SettingsView(model: model)
+    private let model: AppModel
+
+    init(
+        model: AppModel,
+        historyManager: QuotaHistoryManager,
+        openHistoryAction: @escaping () -> Void
+    ) {
+        let rootView = SettingsView(
+            model: model,
+            historyManager: historyManager,
+            openHistoryAction: openHistoryAction
+        )
             .frame(width: 420)
             .padding(20)
 
@@ -27,6 +37,7 @@ final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelega
         window.identifier = NSUserInterfaceItemIdentifier("AgentBarSettingsWindow")
         window.setContentSize(NSSize(width: 460, height: 760))
 
+        self.model = model
         super.init(window: window)
         self.window?.delegate = self
     }
@@ -44,5 +55,9 @@ final class AgentBarSettingsWindowController: NSWindowController, NSWindowDelega
         showWindow(nil)
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        model.cancelAllBrowserSignIns()
     }
 }

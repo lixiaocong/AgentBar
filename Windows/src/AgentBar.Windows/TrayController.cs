@@ -20,6 +20,7 @@ public sealed class TrayController : IDisposable
     private readonly CodexBrowserLoginService _codexLogin;
     private readonly GitHubCopilotBrowserLoginService _copilotLogin;
     private readonly GeminiBrowserLoginService _geminiLogin;
+    private readonly ClaudeBrowserLoginService _claudeLogin;
     private readonly Forms.NotifyIcon _notifyIcon;
     private PopoverWindow? _popover;
     private SettingsWindow? _settings;
@@ -35,13 +36,15 @@ public sealed class TrayController : IDisposable
         ITrayIconRenderer renderer,
         CodexBrowserLoginService codexLogin,
         GitHubCopilotBrowserLoginService copilotLogin,
-        GeminiBrowserLoginService geminiLogin)
+        GeminiBrowserLoginService geminiLogin,
+        ClaudeBrowserLoginService claudeLogin)
     {
         _coordinator = coordinator;
         _renderer = renderer;
         _codexLogin = codexLogin;
         _copilotLogin = copilotLogin;
         _geminiLogin = geminiLogin;
+        _claudeLogin = claudeLogin;
         _notifyIcon = new Forms.NotifyIcon
         {
             Visible = false,
@@ -310,7 +313,8 @@ public sealed class TrayController : IDisposable
                 _coordinator,
                 _codexLogin,
                 _copilotLogin,
-                _geminiLogin);
+                _geminiLogin,
+                _claudeLogin);
             _settings.Closed += (_, _) => _settings = null;
         }
 

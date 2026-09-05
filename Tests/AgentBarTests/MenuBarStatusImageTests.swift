@@ -60,6 +60,31 @@ func unavailableMenuBarStatusImageMarksErrorAcrossBar() throws {
 }
 
 @Test
+@MainActor
+func menuBarStatusImageDrawsScheduleBaselineMarker() throws {
+    let reset = Date().addingTimeInterval(2.5 * 60 * 60)
+    let withBaseline = MenuBarStatusImage.make(
+        bars: [
+            MenuBarStatusImage.Bar(
+                provider: .codex,
+                remainingPercent: 80,
+                resetsAt: reset,
+                windowDuration: 5 * 60 * 60
+            ),
+        ]
+    )
+    let withoutBaseline = MenuBarStatusImage.make(
+        bars: [
+            MenuBarStatusImage.Bar(provider: .codex, remainingPercent: 80),
+        ]
+    )
+
+    let markedRepresentation = try #require(withBaseline.tiffRepresentation)
+    let plainRepresentation = try #require(withoutBaseline.tiffRepresentation)
+    #expect(markedRepresentation != plainRepresentation)
+}
+
+@Test
 func nonHyphenatingLabelDoesNotInsertBreaksOrHyphens() {
     let label = "xiaocong.li@newsbreak.com"
     let displayText = NonHyphenatingLabel.displayText(for: label)

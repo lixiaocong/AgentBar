@@ -3,274 +3,255 @@ import os
 
 public struct ClaudeCLIInstallation: Sendable {
     public let configDirectory: URL
+    /// Identifies the AgentBar browser sign-in whose credentials live in the
+    /// Keychain. Claude accounts are always AgentBar-managed.
+    public let appManagedAccountID: String?
 
-    public static let defaultConfigDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: ".config/claude-code", directoryHint: .isDirectory)
-
-    public static let `default` = ClaudeCLIInstallation(
-        configDirectory: defaultConfigDirectory
-    )
-
-    public init(configDirectory: URL) {
+    public init(configDirectory: URL, appManagedAccountID: String? = nil) {
         self.configDirectory = configDirectory
+        self.appManagedAccountID = appManagedAccountID
     }
 
-    public var authFile: URL {
-        configDirectory.appending(path: "auth.json")
+    public static func appManaged(accountID: String) -> ClaudeCLIInstallation {
+        ClaudeCLIInstallation(
+            configDirectory: AgentProviderAppAuthStore.accountDirectory(
+                for: .claude,
+                accountID: accountID
+            ),
+            appManagedAccountID: accountID
+        )
     }
 }
 
 public struct ClaudeQuotaService: Sendable {
     public let installation: ClaudeCLIInstallation
 
-    public init(installation: ClaudeCLIInstallation = .default) {
+    public init(installation: ClaudeCLIInstallation) {
         self.installation = installation
     }
 
     public var isAvailable: Bool {
-        FileManager.default.fileExists(atPath: installation.authFile.path)
+        guard let accountID = installation.appManagedAccountID else {
+            return false
+        }
+
+        return AgentProviderAppAuthStore.hasSession(provider: .claude, accountID: accountID)
     }
 
     public func loadSnapshot() async throws -> AgentQuotaSnapshot {
-        let installation = installation
-        let data = try await Task.detached(priority: .userInitiated) {
-            try loadAuthDataSynchronously(for: installation)
-        }.value
-
-        return try decodeSnapshot(from: data, updatedAt: Date())
-    }
-
-    public func decodeSnapshot(from data: Data, updatedAt: Date) throws -> AgentQuotaSnapshot {
-        let payload = try decodeAuthPayload(from: data)
-        return buildSnapshot(from: payload, updatedAt: updatedAt)
-    }
-
-    private func loadAuthDataSynchronously(for installation: ClaudeCLIInstallation) throws -> Data {
-        let authFile = installation.authFile
-        guard FileManager.default.fileExists(atPath: authFile.path) else {
-            let error = ClaudeQuotaError.missingCredentialsFile(authFile.path)
-            logError("[Claude] \(error.errorDescription ?? "\(error)")")
-            throw error
+        guard let accountID = installation.appManagedAccountID else {
+            throw ClaudeQuotaError.missingStoredCredentials(installation.configDirectory.path)
         }
 
-        let data: Data
-        do {
-            data = try Data(contentsOf: authFile)
-        } catch {
-            logError("[Claude] Cannot read auth.json: \(error)")
-            throw error
+        let session = try await Task.detached(priority: .userInitiated) {
+            try loadSessionSynchronously(accountID: accountID)
+        }.value
+
+        return try await fetchOAuthSnapshot(session: session)
+    }
+
+    /// Exposed for unit tests — skips Keychain reading and network access.
+    public func decodeUsageSnapshot(
+        from data: Data,
+        accountLabel: String,
+        planType: String?,
+        updatedAt: Date
+    ) throws -> AgentQuotaSnapshot {
+        let windows = try ClaudeUsageResponse.decodeWindows(from: data)
+
+        return AgentQuotaSnapshot(
+            provider: .claude,
+            accountLabel: accountLabel,
+            planType: planType,
+            modelName: nil,
+            sourceSummary: "Claude usage API",
+            metrics: windows.map(Self.metric(for:)),
+            updatedAt: updatedAt
+        )
+    }
+
+    private static func metric(for window: ClaudeUsageWindow) -> AgentQuotaMetric {
+        let usedPercent = min(max(window.utilization, 0), 100)
+
+        return AgentQuotaMetric(
+            id: "claude-\(window.key)",
+            title: ClaudeUsageResponse.title(for: window.key),
+            usedPercent: usedPercent,
+            usedLabel: "\(Int(usedPercent.rounded()))% used",
+            remainingLabel: "\(Int(max(0, 100 - usedPercent).rounded()))% left",
+            resetsAt: window.resetsAt
+        )
+    }
+
+    // MARK: - OAuth path
+
+    private func loadSessionSynchronously(accountID: String) throws -> AgentProviderStoredAuthSession {
+        guard let session = try AgentProviderAppAuthStore.loadSession(
+            provider: .claude,
+            accountID: accountID
+        ) else {
+            throw ClaudeQuotaError.missingStoredCredentials(accountID)
+        }
+
+        return session
+    }
+
+    private func fetchOAuthSnapshot(session: AgentProviderStoredAuthSession) async throws -> AgentQuotaSnapshot {
+        let activeSession = try await refreshedSessionIfNeeded(session)
+        let profile = try? await fetchProfile(accessToken: activeSession.accessToken)
+        let data = try await fetchUsage(accessToken: activeSession.accessToken)
+
+        return try decodeUsageSnapshot(
+            from: data,
+            accountLabel: profile?.preferredAccountLabel ?? activeSession.accountLabel,
+            planType: profile?.planLabel,
+            updatedAt: Date()
+        )
+    }
+
+    private func fetchUsage(accessToken: String) async throws -> Data {
+        var request = URLRequest(url: ClaudeOAuthConfiguration.usageURL)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(ClaudeOAuthConfiguration.betaHeaderValue, forHTTPHeaderField: "anthropic-beta")
+
+        logInfo("Claude → GET \(ClaudeOAuthConfiguration.usageURL.absoluteString)", log: networkLog)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ClaudeQuotaError.invalidResponse
+        }
+
+        logInfo("Claude ← HTTP \(httpResponse.statusCode)", log: networkLog)
+
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "Request failed."
+            logError("Claude usage API error \(httpResponse.statusCode): \(body)", log: networkLog)
+            if httpResponse.statusCode == 401 {
+                throw ClaudeQuotaError.tokenRevoked(
+                    "The Claude sign-in expired or was revoked. Sign in again from AgentBar settings."
+                )
+            }
+            // Anthropic can disallow OAuth reads for a whole organization. Say so
+            // plainly instead of surfacing the raw error envelope.
+            if body.contains("oauth_not_allowed_for_organization") {
+                throw ClaudeQuotaError.oauthNotAllowedForOrganization
+            }
+            throw ClaudeQuotaError.httpStatus(httpResponse.statusCode, message: body)
         }
 
         return data
     }
 
-    private func decodeAuthPayload(from data: Data) throws -> Any {
-        do {
-            return try JSONSerialization.jsonObject(with: data)
-        } catch {
-            logError("[Claude] auth.json decode failed: \(error)")
-            throw ClaudeQuotaError.invalidCredentialsFile
+    private func fetchProfile(accessToken: String) async throws -> ClaudeOAuthProfile {
+        var request = URLRequest(url: ClaudeOAuthConfiguration.profileURL)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(ClaudeOAuthConfiguration.betaHeaderValue, forHTTPHeaderField: "anthropic-beta")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200 ... 299).contains(httpResponse.statusCode) else {
+            throw ClaudeQuotaError.invalidResponse
         }
+
+        return try ClaudeOAuthProfile.decode(from: data)
     }
 
-    private func buildSnapshot(from payload: Any, updatedAt: Date) -> AgentQuotaSnapshot {
-        AgentQuotaSnapshot(
+    /// Refreshes shortly before expiry so a long-lived menu bar session does not
+    /// start failing between refresh ticks.
+    private func refreshedSessionIfNeeded(
+        _ session: AgentProviderStoredAuthSession
+    ) async throws -> AgentProviderStoredAuthSession {
+        guard let refreshToken = session.refreshToken, !refreshToken.isEmpty else {
+            return session
+        }
+
+        guard let expiryDate = session.expiryDate,
+              expiryDate.timeIntervalSinceNow < 300 else {
+            return session
+        }
+
+        let refreshed = try await requestTokenRefresh(refreshToken: refreshToken)
+        let updatedSession = AgentProviderStoredAuthSession(
             provider: .claude,
-            accountLabel: preferredAccountLabel(from: payload),
-            planType: preferredPlanType(from: payload),
-            modelName: nil,
-            sourceSummary: "Claude Code local auth",
-            metrics: [],
-            updatedAt: updatedAt
+            accountID: session.accountID,
+            accountLabel: session.accountLabel,
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken ?? refreshToken,
+            expiryDate: refreshed.expiresIn.map { Date().addingTimeInterval(TimeInterval($0)) },
+            scopes: session.scopes,
+            lastRefresh: Date()
         )
+
+        try AgentProviderAppAuthStore.save(session: updatedSession)
+        return updatedSession
     }
 
-    private func preferredAccountLabel(from payload: Any) -> String {
-        if let email = findString(
-            in: payload,
-            matchingKeys: ["email", "accountemail", "useremail", "primaryemail"]
-        ) {
-            return email
+    private func requestTokenRefresh(refreshToken: String) async throws -> ClaudeRefreshResponse {
+        var request = URLRequest(url: ClaudeOAuthConfiguration.tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": ClaudeOAuthConfiguration.clientID
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ClaudeQuotaError.invalidResponse
         }
 
-        if let displayName = findString(
-            in: payload,
-            matchingKeys: ["displayname", "fullname", "username"],
-            pathMustContainOneOf: ["user", "account", "profile", "workspace"]
-        ) {
-            return displayName
-        }
-
-        if let name = findString(
-            in: payload,
-            matchingKeys: ["name"],
-            pathMustContainOneOf: ["user", "account", "profile", "workspace"]
-        ) {
-            return name
-        }
-
-        if let workspaceName = findString(
-            in: payload,
-            matchingKeys: ["workspacename", "organizationname", "teamname"]
-        ) {
-            return workspaceName
-        }
-
-        if isConsoleAuth(payload) {
-            return "Anthropic Console"
-        }
-
-        return "Claude Code"
-    }
-
-    private func preferredPlanType(from payload: Any) -> String? {
-        if let plan = findString(
-            in: payload,
-            matchingKeys: ["plan", "plantype", "subscriptionplan", "subscriptiontype", "tier", "planname"]
-        ) {
-            return plan
-        }
-
-        if isConsoleAuth(payload) {
-            return "Anthropic Console"
-        }
-
-        if isClaudeSubscriptionAuth(payload) {
-            return "Claude subscription"
-        }
-
-        return nil
-    }
-
-    private func isClaudeSubscriptionAuth(_ payload: Any) -> Bool {
-        containsKey(in: payload, matchingKeys: ["accesstoken", "refreshtoken", "expiresat", "expirydate"])
-            || containsString(in: payload, containing: ["claude.ai"])
-    }
-
-    private func isConsoleAuth(_ payload: Any) -> Bool {
-        containsKey(in: payload, matchingKeys: ["apikey", "anthropicapikey", "customapikey", "apiKeyResponses".normalizedJSONKey])
-            || containsString(in: payload, containing: ["console.anthropic.com"])
-    }
-
-    private func findString(
-        in value: Any,
-        matchingKeys: Set<String>,
-        path: [String] = [],
-        pathMustContainOneOf requiredPathComponents: Set<String> = []
-    ) -> String? {
-        if let dictionary = value as? [String: Any] {
-            for rawKey in dictionary.keys.sorted() {
-                let normalizedKey = rawKey.normalizedJSONKey
-                let nextPath = path + [normalizedKey]
-                let pathMatches = requiredPathComponents.isEmpty || !requiredPathComponents.isDisjoint(with: Set(nextPath))
-
-                if matchingKeys.contains(normalizedKey),
-                   pathMatches,
-                   let string = sanitizedString(from: dictionary[rawKey]),
-                   !string.isEmpty {
-                    return string
-                }
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "Request failed."
+            if body.localizedCaseInsensitiveContains("invalid_grant") {
+                throw ClaudeQuotaError.tokenRevoked(
+                    "The Claude sign-in was revoked. Sign in again from AgentBar settings."
+                )
             }
-
-            for rawKey in dictionary.keys.sorted() {
-                let nextPath = path + [rawKey.normalizedJSONKey]
-                if let found = findString(
-                    in: dictionary[rawKey] as Any,
-                    matchingKeys: matchingKeys,
-                    path: nextPath,
-                    pathMustContainOneOf: requiredPathComponents
-                ) {
-                    return found
-                }
-            }
+            throw ClaudeQuotaError.refreshFailed("HTTP \(httpResponse.statusCode): \(body)")
         }
 
-        if let array = value as? [Any] {
-            for element in array {
-                if let found = findString(
-                    in: element,
-                    matchingKeys: matchingKeys,
-                    path: path,
-                    pathMustContainOneOf: requiredPathComponents
-                ) {
-                    return found
-                }
-            }
-        }
-
-        return nil
-    }
-
-    private func containsKey(
-        in value: Any,
-        matchingKeys: Set<String>
-    ) -> Bool {
-        if let dictionary = value as? [String: Any] {
-            for rawKey in dictionary.keys {
-                let normalizedKey = rawKey.normalizedJSONKey
-                if matchingKeys.contains(normalizedKey) {
-                    return true
-                }
-            }
-
-            for nestedValue in dictionary.values {
-                if containsKey(in: nestedValue, matchingKeys: matchingKeys) {
-                    return true
-                }
-            }
-        }
-
-        if let array = value as? [Any] {
-            return array.contains { containsKey(in: $0, matchingKeys: matchingKeys) }
-        }
-
-        return false
-    }
-
-    private func containsString(
-        in value: Any,
-        containing needles: [String]
-    ) -> Bool {
-        if let string = value as? String {
-            let lowercased = string.lowercased()
-            return needles.contains { lowercased.contains($0) }
-        }
-
-        if let dictionary = value as? [String: Any] {
-            return dictionary.values.contains { containsString(in: $0, containing: needles) }
-        }
-
-        if let array = value as? [Any] {
-            return array.contains { containsString(in: $0, containing: needles) }
-        }
-
-        return false
-    }
-
-    private func sanitizedString(from value: Any?) -> String? {
-        guard let string = value as? String else { return nil }
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        return try JSONDecoder().decode(ClaudeRefreshResponse.self, from: data)
     }
 }
 
-enum ClaudeQuotaError: LocalizedError, Equatable {
-    case missingCredentialsFile(String)
-    case invalidCredentialsFile
+public enum ClaudeQuotaError: LocalizedError, Equatable {
+    case missingStoredCredentials(String)
+    case invalidResponse
+    case httpStatus(Int, message: String)
+    case refreshFailed(String)
+    case tokenRevoked(String)
+    case oauthNotAllowedForOrganization
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
-        case let .missingCredentialsFile(path):
-            return "Claude Code credentials not found at \(path). Sign in with Claude Code first, then refresh AgentBar."
-        case .invalidCredentialsFile:
-            return "Claude Code auth.json could not be parsed."
+        case .oauthNotAllowedForOrganization:
+            return "Anthropic does not allow OAuth usage reads for this account's organization. Usage windows are available to Claude Pro and Max subscriptions; API/Console-only organizations are not supported."
+        case let .missingStoredCredentials(accountID):
+            return "No stored Claude credentials for \(accountID). Sign in again from AgentBar settings."
+        case .invalidResponse:
+            return "Claude returned an unreadable response."
+        case let .httpStatus(status, message):
+            return "Claude usage request failed with HTTP \(status): \(message)"
+        case let .refreshFailed(message):
+            return "Claude token refresh failed: \(message)"
+        case let .tokenRevoked(message):
+            return message
         }
     }
 }
 
-private extension String {
-    var normalizedJSONKey: String {
-        let scalars = lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
-        return String(String.UnicodeScalarView(scalars))
+private struct ClaudeRefreshResponse: Decodable {
+    let accessToken: String
+    let refreshToken: String?
+    let expiresIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresIn = "expires_in"
     }
 }

@@ -18,7 +18,7 @@ public sealed class AgentQuotaServiceFactory(IAuthSessionStore authStore, HttpCl
         AgentProviderKind.Codex => new CodexQuotaService(account, authStore, _httpClient),
         AgentProviderKind.GitHubCopilot => new GitHubCopilotQuotaService(account, authStore, _httpClient),
         AgentProviderKind.Gemini => new GeminiQuotaService(account, authStore, _httpClient),
-        AgentProviderKind.Claude => new ClaudeQuotaService(account),
+        AgentProviderKind.Claude => new ClaudeQuotaService(account, authStore, _httpClient),
         AgentProviderKind.Junie => new JunieQuotaService(account, authStore, _httpClient),
         _ => throw new NotSupportedException($"Provider {account.Provider} is not supported.")
     };
@@ -1069,59 +1069,330 @@ public sealed class GeminiQuotaService(
 
 public sealed record GeminiOAuthClientConfiguration(string ClientId, string ClientSecret);
 
-public sealed class ClaudeQuotaService(ConfiguredAgentAccount account) : AgentQuotaServiceBase(account)
+public sealed class ClaudeQuotaService(
+    ConfiguredAgentAccount account,
+    IAuthSessionStore authStore,
+    HttpClient? httpClient = null)
+    : AgentQuotaServiceBase(account)
 {
-    public override bool IsAvailable => File.Exists(CredentialsFile()) || File.Exists(AuthFile());
+    public const string ClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+    public static readonly Uri AuthorizationUri = new("https://platform.claude.com/oauth/authorize");
+    public static readonly Uri TokenUri = new("https://platform.claude.com/v1/oauth/token");
+    public static readonly Uri ProfileUri = new("https://api.anthropic.com/api/oauth/profile");
+    public static readonly Uri UsageUri = new("https://api.anthropic.com/api/oauth/usage");
+    public static readonly string[] Scopes = ["user:profile", "user:inference"];
+    public const string CallbackPath = "/callback";
+
+    /// Anthropic gates OAuth-token API access behind this beta flag; Claude Code
+    /// sends it on every call made with an OAuth access token.
+    public const string BetaHeaderValue = "oauth-2025-04-20";
+
+    private readonly HttpClient _httpClient = httpClient ?? new HttpClient();
+
+    /// Claude accounts are always AgentBar browser sign-ins, so credentials live
+    /// in the credential store and the account directory is only a marker.
+    public override bool IsAvailable =>
+        Account.Directory.Path.StartsWith(
+            AgentBarPaths.Default.AccountsDirectory(AgentProviderKind.Claude),
+            StringComparison.OrdinalIgnoreCase);
 
     public override async Task<AgentQuotaSnapshot> LoadSnapshotAsync(CancellationToken cancellationToken = default)
     {
-        var file = File.Exists(CredentialsFile()) ? CredentialsFile() : AuthFile();
-        if (!File.Exists(file))
-        {
-            throw new ProviderQuotaException("No Claude Code credentials were found.");
-        }
+        var accountId = AccountIdFromDirectory(Account);
+        var session = await authStore.LoadAsync(Provider, accountId, cancellationToken)
+            ?? throw new ProviderQuotaException(
+                "No stored Claude credentials were found. Sign in with the browser from AgentBar settings.");
 
-        return DecodeSnapshot(await File.ReadAllBytesAsync(file, cancellationToken), DateTimeOffset.UtcNow);
+        return await LoadOAuthSnapshotAsync(session, cancellationToken);
     }
 
-    public AgentQuotaSnapshot DecodeSnapshot(byte[] data, DateTimeOffset updatedAt)
+    private async Task<AgentQuotaSnapshot> LoadOAuthSnapshotAsync(
+        StoredAuthSession session,
+        CancellationToken cancellationToken)
     {
-        using var document = JsonDocument.Parse(data);
-        var root = document.RootElement;
-        var account = root.OptionalObject("oauth").OptionalObject("account");
-        var accountLabel = account.CleanString("email")
-            ?? account.CleanString("name")
-            ?? root.CleanString("email", "username")
-            ?? (root.TryProperty(out _, "customApiKeyResponses") ? "Anthropic Console" : "Claude Account");
-        var planType = root.CleanString("subscriptionType", "subscription_type", "planType", "plan")
-            ?? (root.TryProperty(out _, "customApiKeyResponses") ? "Anthropic Console" : null);
+        var active = await RefreshedSessionIfNeededAsync(session, cancellationToken);
+        var profile = await TryFetchProfileAsync(active.AccessToken, cancellationToken);
+        var usage = await FetchUsageAsync(active.AccessToken, cancellationToken);
 
-        return new AgentQuotaSnapshot(
+        return DecodeUsageSnapshot(
+            usage,
+            profile?.AccountLabel ?? active.AccountLabel,
+            profile?.PlanLabel,
+            DateTimeOffset.UtcNow);
+    }
+
+    public AgentQuotaSnapshot DecodeUsageSnapshot(
+        byte[] data,
+        string accountLabel,
+        string? planType,
+        DateTimeOffset updatedAt) =>
+        new(
             AgentProviderKind.Claude,
             accountLabel,
             null,
             planType,
             null,
-            "Claude Code local auth",
-            [],
+            "Claude usage API",
+            ClaudeUsageWindows.Parse(data).Select(ClaudeUsageWindows.ToMetric).ToArray(),
             updatedAt);
+
+    private async Task<byte[]> FetchUsageAsync(string accessToken, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, UsageUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("anthropic-beta", BetaHeaderValue);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            throw new ProviderQuotaException(
+                "The Claude sign-in expired or was revoked. Sign in again from AgentBar settings.");
+        }
+
+        var body = Encoding.UTF8.GetString(bytes);
+        if (!response.IsSuccessStatusCode)
+        {
+            // Anthropic can disallow OAuth reads for a whole organization. Say so
+            // plainly instead of surfacing the raw error envelope.
+            if (body.Contains("oauth_not_allowed_for_organization", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ProviderQuotaException(
+                    "Anthropic does not allow OAuth usage reads for this account's organization. "
+                    + "Usage windows are available to Claude Pro and Max subscriptions; "
+                    + "API/Console-only organizations are not supported.");
+            }
+
+            throw new ProviderQuotaException(
+                $"Claude usage request failed with HTTP {(int)response.StatusCode}: {body}");
+        }
+
+        return bytes;
     }
 
-    private string CredentialsFile()
+    private async Task<ClaudeProfile?> TryFetchProfileAsync(string accessToken, CancellationToken cancellationToken)
     {
-        var directory = string.IsNullOrWhiteSpace(Account.Directory.Path)
-            ? AgentBarPaths.ClaudeDefaultDirectory
-            : Account.Directory.Path;
-        return Path.Combine(directory, ".credentials.json");
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, ProfileUri);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Add("anthropic-beta", BetaHeaderValue);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return ClaudeProfile.Parse(await response.Content.ReadAsByteArrayAsync(cancellationToken));
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
     }
 
-    private string AuthFile()
+    private async Task<StoredAuthSession> RefreshedSessionIfNeededAsync(
+        StoredAuthSession session,
+        CancellationToken cancellationToken)
     {
-        var directory = string.IsNullOrWhiteSpace(Account.Directory.Path)
-            ? AgentBarPaths.ClaudeDefaultDirectory
-            : Account.Directory.Path;
-        return Path.Combine(directory, "auth.json");
+        if (string.IsNullOrWhiteSpace(session.RefreshToken)
+            || session.ExpiresAt is null
+            || session.ExpiresAt.Value - DateTimeOffset.UtcNow > TimeSpan.FromMinutes(5))
+        {
+            return session;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, TokenUri);
+        request.Content = JsonContent(new Dictionary<string, string?>
+        {
+            ["grant_type"] = "refresh_token",
+            ["refresh_token"] = session.RefreshToken,
+            ["client_id"] = ClientId
+        });
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = Encoding.UTF8.GetString(bytes);
+            throw new ProviderQuotaException(
+                body.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+                    ? "The Claude sign-in was revoked. Sign in again from AgentBar settings."
+                    : $"Claude token refresh failed with HTTP {(int)response.StatusCode}: {body}");
+        }
+
+        using var document = JsonDocument.Parse(bytes);
+        var root = document.RootElement;
+        var accessToken = root.CleanString("access_token")
+            ?? throw new ProviderQuotaException("Claude token refresh returned no access token.");
+        var updated = session with
+        {
+            AccessToken = accessToken,
+            RefreshToken = root.CleanString("refresh_token") ?? session.RefreshToken,
+            ExpiresAt = root.Number("expires_in") is { } expiresIn
+                ? DateTimeOffset.UtcNow.AddSeconds(expiresIn)
+                : null,
+            LastRefresh = DateTimeOffset.UtcNow
+        };
+
+        await authStore.SaveAsync(updated, cancellationToken);
+        return updated;
     }
+
+    internal static StringContent JsonContent(Dictionary<string, string?> values) =>
+        new(JsonSerializer.Serialize(values), Encoding.UTF8, "application/json");
+}
+
+public sealed record ClaudeUsageWindow(string Key, double Utilization, DateTimeOffset? ResetsAt);
+
+/// Parses `GET /api/oauth/usage`. Windows arrive as top-level objects keyed by
+/// window name (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`, ...).
+/// Anthropic adds windows over time, so every top-level object carrying a
+/// `utilization` value is accepted rather than matching a fixed key list.
+public static class ClaudeUsageWindows
+{
+    public static IReadOnlyList<ClaudeUsageWindow> Parse(byte[] data)
+    {
+        using var document = JsonDocument.Parse(data);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new ProviderQuotaException("Claude returned an unreadable usage response.");
+        }
+
+        var windows = new List<ClaudeUsageWindow>();
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var utilization = property.Value.Number("utilization");
+            if (utilization is null)
+            {
+                continue;
+            }
+
+            // A window the account is not entitled to reports itself disabled.
+            if (property.Value.Bool("is_enabled") == false)
+            {
+                continue;
+            }
+
+            windows.Add(new ClaudeUsageWindow(
+                property.Name,
+                Math.Clamp(utilization.Value, 0, 100),
+                ResetsAt(property.Value)));
+        }
+
+        return windows.OrderBy(SortRank).ThenBy(window => window.Key, StringComparer.Ordinal).ToArray();
+    }
+
+    public static AgentQuotaMetric ToMetric(ClaudeUsageWindow window)
+    {
+        var used = Math.Clamp(window.Utilization, 0, 100);
+        return new AgentQuotaMetric(
+            $"claude-{window.Key}",
+            Title(window.Key),
+            used,
+            $"{Rounded(used)}% used",
+            $"{Rounded(Math.Max(0, 100 - used))}% left",
+            window.ResetsAt);
+    }
+
+    /// Swift's `rounded()` rounds halves away from zero while .NET's default is
+    /// to even, so the two platforms must be pinned to the same rule to render
+    /// identical labels for values such as 42.5.
+    private static double Rounded(double value) => Math.Round(value, MidpointRounding.AwayFromZero);
+
+    public static string Title(string key) => key switch
+    {
+        "five_hour" => "Session (5h)",
+        "seven_day" => "Weekly (all models)",
+        "seven_day_opus" => "Weekly (Opus)",
+        "seven_day_sonnet" => "Weekly (Sonnet)",
+        _ => string.Join(
+            ' ',
+            key.Split('_', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => char.ToUpperInvariant(part[0]) + part[1..]))
+    };
+
+    private static int SortRank(ClaudeUsageWindow window) => window.Key switch
+    {
+        "five_hour" => 0,
+        "seven_day" => 1,
+        "seven_day_opus" => 2,
+        "seven_day_sonnet" => 3,
+        _ => 4
+    };
+
+    private static DateTimeOffset? ResetsAt(JsonElement element)
+    {
+        if (!element.TryProperty(out var value, "resets_at", "resetsAt"))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var seconds))
+        {
+            return DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1000));
+        }
+
+        var raw = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        if (DateTimeOffset.TryParse(
+                raw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out var parsed))
+        {
+            return parsed;
+        }
+
+        return double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var epoch)
+            ? DateTimeOffset.FromUnixTimeMilliseconds((long)(epoch * 1000))
+            : null;
+    }
+}
+
+/// Subset of `GET /api/oauth/profile` that AgentBar displays. The payload nests
+/// account and organization objects and has used both snake_case and camelCase
+/// spellings across Claude Code releases, so parsing stays tolerant.
+public sealed record ClaudeProfile(string AccountLabel, string? PlanLabel, string? AccountId)
+{
+    public static ClaudeProfile Parse(byte[] data)
+    {
+        using var document = JsonDocument.Parse(data);
+        var root = document.RootElement;
+        var account = root.OptionalObject("account");
+        var organization = root.OptionalObject("organization");
+
+        var label = account.CleanString("email_address", "emailAddress", "email")
+            ?? root.CleanString("email_address", "emailAddress", "email")
+            ?? account.CleanString("display_name", "displayName", "full_name", "name")
+            ?? organization.CleanString("name")
+            ?? "Claude Account";
+        var subscription = root.CleanString("subscription_type", "subscriptionType")
+            ?? organization.CleanString("subscription_type", "subscriptionType");
+
+        return new ClaudeProfile(
+            label,
+            PlanLabelFrom(subscription),
+            account.CleanString("uuid", "id") ?? root.CleanString("account_uuid", "accountUuid"));
+    }
+
+    /// Turns `claude_max` into `Claude Max` so the plan reads like the other providers.
+    private static string? PlanLabelFrom(string? subscriptionType) =>
+        string.IsNullOrWhiteSpace(subscriptionType)
+            ? null
+            : string.Join(
+                ' ',
+                subscriptionType.Split(['_', '-'], StringSplitOptions.RemoveEmptyEntries)
+                    .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
 }
 
 public sealed class JunieQuotaService(

@@ -7,6 +7,7 @@ import AgentBarCore
 
 struct MenuBarView: View {
     let model: AppModel
+    let openHistoryAction: () -> Void
     let openSettingsAction: () -> Void
     let onPreferredSizeChange: @MainActor (CGSize) -> Void
 
@@ -15,10 +16,12 @@ struct MenuBarView: View {
 
     init(
         model: AppModel,
+        openHistoryAction: @escaping () -> Void = {},
         openSettingsAction: @escaping () -> Void = {},
         onPreferredSizeChange: @escaping @MainActor (CGSize) -> Void = { _ in }
     ) {
         self.model = model
+        self.openHistoryAction = openHistoryAction
         self.openSettingsAction = openSettingsAction
         self.onPreferredSizeChange = onPreferredSizeChange
     }
@@ -101,7 +104,9 @@ struct MenuBarView: View {
         let style = providerHeaderStyle(for: provider)
         let snapshot = model.snapshot(for: provider)
         let error = model.errorMessage(for: provider)
-        let statusTint = panelTint(
+        let quotaAggregates = accountCount > 1 ? model.quotaAggregates(for: provider) : []
+        let statusTint = providerPanelTint(
+            aggregates: quotaAggregates,
             metric: snapshot?.highlightMetric,
             error: error,
             fallback: style.tint
@@ -125,12 +130,19 @@ struct MenuBarView: View {
                 Text(accountCount == 1 ? "1 account" : "\(accountCount) accounts")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .layoutPriority(1)
 
             Spacer()
 
-            providerSummaryValue(snapshot: snapshot, error: error, tint: statusTint)
+            providerSummaryValue(
+                snapshot: snapshot,
+                error: error,
+                quotaAggregates: quotaAggregates,
+                tint: statusTint
+            )
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
@@ -180,6 +192,11 @@ struct MenuBarView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     metricsStack(snapshot.metrics)
+                }
+
+                if let resetCredits = snapshot.resetCredits,
+                   resetCredits.hasAvailableCredits {
+                    resetCreditsBlock(resetCredits, tint: statusTint)
                 }
             } else if let error = status.errorMessage {
                 Text(error)
@@ -234,6 +251,61 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
+    private func resetCreditsBlock(
+        _ resetCredits: AgentQuotaResetCredits,
+        tint: Color
+    ) -> some View {
+        let availableCredits = Array(resetCredits.availableCredits.prefix(3))
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(resetCreditCountText(resetCredits.visibleAvailableCount))
+                    .font(.caption.weight(.heavy))
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if let expiresAt = resetCredits.nextExpiringCredit?.expiresAt {
+                    Text("Next \(shortResetCreditDate(expiresAt))")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+
+            if !availableCredits.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(availableCredits.enumerated()), id: \.element.id) { index, credit in
+                        HStack(spacing: 8) {
+                            Text("Reset \(index + 1)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            Spacer(minLength: 4)
+
+                            Text(credit.expiresAt.map { shortResetCreditDate($0) } ?? "No expiration")
+                                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.primary.opacity(0.82))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(0.14), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
     private func metricsStack(_ metrics: [AgentQuotaMetric]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(metrics.enumerated()), id: \.element.id) { index, metric in
@@ -269,7 +341,7 @@ struct MenuBarView: View {
                     .layoutPriority(3)
             }
 
-            quotaBar(value: metric.remainingPercent, tint: tint)
+            quotaBar(metric: metric, tint: tint)
 
             HStack(spacing: 8) {
                 Text(metric.usedLabel)
@@ -288,24 +360,57 @@ struct MenuBarView: View {
         }
     }
 
-    private func quotaBar(value: Double, tint: Color) -> some View {
+    private func quotaBar(metric: AgentQuotaMetric, tint: Color) -> some View {
+        let baseline = AgentQuotaDisplayColor.baselineRemainingPercent(
+            resetsAt: metric.resetsAt,
+            windowDuration: metric.windowDuration
+        )
+
+        return quotaBar(
+            value: metric.remainingPercent,
+            baselinePercent: baseline,
+            tint: tint
+        )
+    }
+
+    private func quotaBar(
+        value: Double,
+        baselinePercent: Double?,
+        tint: Color,
+        trackHeight: CGFloat = 5,
+        markerHeight: CGFloat = 9
+    ) -> some View {
         let progress = min(max(value, 0), 100) / 100
+        let baseline = baselinePercent.map { min(max($0, 0), 100) / 100 }
 
         return GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.secondary.opacity(0.20))
+                    .frame(height: trackHeight)
 
                 Capsule()
                     .fill(tint)
-                    .frame(width: max(3, proxy.size.width * progress))
+                    .frame(width: progress <= 0 ? 0 : max(3, proxy.size.width * progress))
+                    .frame(height: trackHeight)
+
+                if let baseline {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Color.primary.opacity(0.78))
+                        .frame(width: 2, height: markerHeight)
+                        .position(
+                            x: min(max(1, proxy.size.width * baseline), max(1, proxy.size.width - 1)),
+                            y: proxy.size.height / 2
+                        )
+                        .accessibilityHidden(true)
+                }
             }
         }
-        .frame(height: 5)
+        .frame(height: markerHeight)
     }
 
     private func quotaTint(for metric: AgentQuotaMetric) -> Color {
-        quotaTint(for: metric.remainingPercent)
+        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: metric))
     }
 
     private func compactRemainingLabel(_ label: String) -> String {
@@ -322,6 +427,14 @@ struct MenuBarView: View {
         }
 
         return normalized
+    }
+
+    private func resetCreditCountText(_ count: Int) -> String {
+        count == 1 ? "1 reset available" : "\(count) resets available"
+    }
+
+    private func shortResetCreditDate(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func accountBadges(provider: AgentProviderKind, snapshot: AgentQuotaSnapshot?) -> [String] {
@@ -398,11 +511,53 @@ struct MenuBarView: View {
             return fallback
         }
 
-        return quotaTint(for: metric.remainingPercent)
+        return quotaTint(for: metric)
     }
 
-    private func quotaTint(for remainingPercent: Double) -> Color {
-        Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: remainingPercent))
+    private func quotaTint(for aggregate: AgentQuotaMetricAggregate) -> Color {
+        if aggregate.isUnlimited {
+            return Color(agentQuotaRGB: AgentQuotaDisplayColor.healthy)
+        }
+
+        return Color(
+            agentQuotaRGB: AgentQuotaDisplayColor.color(
+                for: aggregate.remainingPercent,
+                resetsAt: aggregate.resetsAt,
+                windowDuration: aggregate.windowDuration
+            )
+        )
+    }
+
+    private func providerPanelTint(
+        aggregates: [AgentQuotaMetricAggregate],
+        metric: AgentQuotaMetric?,
+        error: String?,
+        fallback: Color
+    ) -> Color {
+        if error != nil {
+            return .red
+        }
+
+        guard !aggregates.isEmpty else {
+            return panelTint(metric: metric, error: nil, fallback: fallback)
+        }
+
+        let now = Date()
+        let state = aggregates.prefix(2).map { aggregate in
+            if aggregate.isUnlimited {
+                return AgentQuotaDisplayState.healthy
+            }
+
+            return AgentQuotaDisplayColor.state(
+                for: aggregate.remainingPercent,
+                resetsAt: aggregate.resetsAt,
+                windowDuration: aggregate.windowDuration,
+                now: now
+            )
+        }
+        .max() ?? .healthy
+
+        return Color(agentQuotaRGB: AgentQuotaDisplayColor.color(for: state))
     }
 
     private func providerIconBadge(_ style: ProviderHeaderStyle, tint: Color) -> some View {
@@ -423,10 +578,13 @@ struct MenuBarView: View {
     private func providerSummaryValue(
         snapshot: AgentQuotaSnapshot?,
         error: String?,
+        quotaAggregates: [AgentQuotaMetricAggregate],
         tint: Color
     ) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
-            if let metric = snapshot?.highlightMetric {
+            if !quotaAggregates.isEmpty {
+                providerQuotaAggregates(Array(quotaAggregates.prefix(2)))
+            } else if let metric = snapshot?.highlightMetric {
                 Text(metric.percentText)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .monospacedDigit()
@@ -463,6 +621,93 @@ struct MenuBarView: View {
         }
     }
 
+    @ViewBuilder
+    private func providerQuotaAggregates(_ aggregates: [AgentQuotaMetricAggregate]) -> some View {
+        Text("TOTAL LEFT")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.secondary)
+
+        ForEach(aggregates) { aggregate in
+            let tint = quotaTint(for: aggregate)
+            let baseline = aggregateBaselineRemainingPercent(aggregate)
+
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(compactQuotaAggregateTitle(aggregate.title))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 2)
+
+                    Text(aggregate.displayValue)
+                        .font(.system(.caption, design: .rounded).weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
+
+                quotaBar(
+                    value: aggregate.isUnlimited ? 100 : aggregate.remainingPercent,
+                    baselinePercent: baseline,
+                    tint: tint
+                )
+            }
+            .frame(width: 108, alignment: .trailing)
+            .help(quotaAggregateHelpText(aggregate))
+        }
+    }
+
+    private func compactQuotaAggregateTitle(_ title: String) -> String {
+        var compact = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replacements = [
+            (#"(?i)\b(\d+)\s+minutes?\s+window\b"#, "$1m"),
+            (#"(?i)\b(\d+)\s+hours?\s+window\b"#, "$1h"),
+            (#"(?i)\b(\d+)\s+days?\s+window\b"#, "$1d"),
+            (#"(?i)\b(\d+)\s+weeks?\s+window\b"#, "$1w"),
+            (#"(?i)\b(\d+)\s+months?\s+window\b"#, "$1mo")
+        ]
+
+        for (pattern, replacement) in replacements {
+            compact = compact.replacingOccurrences(
+                of: pattern,
+                with: replacement,
+                options: .regularExpression
+            )
+        }
+
+        return compact
+    }
+
+    private func quotaAggregateHelpText(_ aggregate: AgentQuotaMetricAggregate) -> String {
+        if aggregate.isUnlimited {
+            return "\(aggregate.title): unlimited across \(aggregate.accountCount) accounts."
+        }
+
+        let baselineText = aggregateBaselineRemainingPercent(aggregate).map {
+            " Current baseline \(compactPercent($0))."
+        } ?? ""
+        let resetText = aggregate.resetsAt.map {
+            " Earliest reset \($0.formatted(date: .abbreviated, time: .shortened))."
+        } ?? ""
+        return "\(aggregate.title): \(aggregate.displayValue) average remaining across \(aggregate.accountCount) accounts.\(baselineText)\(resetText)"
+    }
+
+    private func aggregateBaselineRemainingPercent(_ aggregate: AgentQuotaMetricAggregate) -> Double? {
+        guard !aggregate.isUnlimited else { return nil }
+
+        return AgentQuotaDisplayColor.baselineRemainingPercent(
+            resetsAt: aggregate.resetsAt,
+            windowDuration: aggregate.windowDuration
+        )
+    }
+
+    private func compactPercent(_ value: Double) -> String {
+        "\(Int(min(max(value, 0), 100).rounded()))%"
+    }
+
     private func accountBadge(_ text: String, tint: Color) -> some View {
         Text(text)
             .font(.subheadline.weight(.heavy))
@@ -479,6 +724,9 @@ struct MenuBarView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
+            Button("History…") {
+                openHistoryAction()
+            }
 
             Button("Settings…") {
                 openSettingsAction()
@@ -505,6 +753,8 @@ struct MenuBarView: View {
             return ProviderHeaderStyle(eyebrow: "GOOGLE", title: "Gemini", assetName: "ProviderLogoGemini", tint: .green)
         case .claude:
             return ProviderHeaderStyle(eyebrow: "ANTHROPIC", title: "Claude", assetName: "ProviderLogoClaude", tint: .purple)
+        case .zai:
+            return ProviderHeaderStyle(eyebrow: "Z.AI", title: "GLM", assetName: "ProviderLogoZAI", tint: .blue)
         case .junie:
             return ProviderHeaderStyle(eyebrow: "JETBRAINS", title: "Junie", assetName: "ProviderLogoJunie", tint: .orange)
         }

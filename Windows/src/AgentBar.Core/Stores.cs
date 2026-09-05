@@ -20,14 +20,14 @@ public sealed record AgentBarPathSet(string RootDirectory, string? ClaudeDefault
 
 public static class AgentBarPaths
 {
+    public static string ClaudeDefaultDirectory { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".claude");
+
     public static AgentBarPathSet Default { get; } = new(
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "AgentBar"));
-
-    public static string ClaudeDefaultDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".claude");
 
     public static IEnumerable<string> DefaultJetBrainsQuotaCacheFiles()
     {

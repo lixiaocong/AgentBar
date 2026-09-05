@@ -3,7 +3,7 @@
 Minimal macOS menu-bar app that tracks coding-agent quota usage.
 Written in Swift 6 / SwiftUI, targeting macOS 14+.
 
-Codex, GitHub Copilot, and Gemini are displayed **simultaneously** after AgentBar-owned browser sign-in. Tokens are stored in macOS Keychain entries owned by AgentBar, so CLI or IDE profile changes do not silently switch the accounts shown in AgentBar.
+Codex, GitHub Copilot, Gemini, and Claude are displayed **simultaneously** after AgentBar-owned browser sign-in. Tokens are stored in macOS Keychain entries owned by AgentBar, so CLI or IDE profile changes do not silently switch the accounts shown in AgentBar.
 
 ---
 
@@ -22,23 +22,23 @@ If a UI change intentionally applies to only one platform, document the reason i
 
 ```
 Sources/AgentBar/
-├── AgentBarApp.swift          Entry point – MenuBarExtra + Settings scene
-├── AppModel.swift             @Observable view-model, tri-provider refresh loop
-├── AppLogger.swift            Shared logging helpers (os.Logger + stderr/stdout)
-├── Models/
-│   └── AgentQuotaModels.swift  AgentProviderKind, AgentQuotaSnapshot, AgentQuotaMetric
-├── Codex/
-│   └── CodexQuotaService.swift  Uses AgentBar Keychain auth, calls ChatGPT Codex backend API
-├── GitHubCopilot/
-│   └── GitHubCopilotQuotaService.swift  Uses AgentBar Keychain auth, calls copilot_internal/user API
-├── Gemini/
-│   └── GeminiQuotaService.swift  Uses AgentBar Keychain auth, calls Google Cloud Code Assist API
-├── OpenAI/
-│   └── KeychainSecretStore.swift  Generic Keychain read/write/delete helper
+├── AgentBarApp.swift          Entry point and app-delegate controller wiring
+├── AppModel.swift             @Observable view-model, multi-provider refresh loop
+├── AgentBarHistoryWindowController.swift  Singleton, multi-display History window lifecycle
+├── History/
+│   ├── QuotaHistoryStore.swift      SQLite schema, sampling, reset classification, queries
+│   ├── QuotaHistoryManager.swift    Shared recording preference, stats, maintenance state
+│   ├── QuotaHistoryModels.swift     History records, ranges, event types, downsampling
+│   └── QuotaHistoryViewModel.swift  Account/window selection and range loading
 └── Views/
-    ├── MenuBarView.swift       Tri-provider quota gauges, action buttons
-    └── SettingsView.swift      Credential status for all providers, open-config buttons
+    ├── MenuBarView.swift       Provider quota gauges and History/Settings actions
+    ├── QuotaHistoryView.swift  Account sidebar and per-window Swift Charts
+    └── SettingsView.swift      Credentials plus history recording and cleanup controls
 Sources/AgentBarCore/
+├── Models/AgentQuotaModels.swift        Shared provider, snapshot, and metric models
+├── Codex/CodexQuotaService.swift        ChatGPT Codex quota API
+├── GitHubCopilot/GitHubCopilotQuotaService.swift  Copilot quota API
+├── Gemini/GeminiQuotaService.swift      Code Assist quota API
 └── Widget/
     ├── AgentWidgetState.swift            Shared state model + AgentWidgetStateStore (App Group container)
     └── AgentAccountSnapshotLoader.swift  Loads each provider's snapshot for the widget timeline
@@ -47,7 +47,8 @@ Sources/AgentBarWidgetExtension/
 Tests/AgentBarTests/
 ├── CodexQuotaServiceTests.swift
 ├── GitHubCopilotQuotaServiceTests.swift
-└── GeminiQuotaServiceTests.swift
+├── GeminiQuotaServiceTests.swift
+└── QuotaHistoryStoreTests.swift
 ```
 
 ---
@@ -117,6 +118,42 @@ Supported tiers:
 | `legacy-tier` | Legacy |
 | `standard-tier` | Standard |
 
+### Claude Code (`AgentProviderKind.claude`)
+
+| Property | Value |
+|---|---|
+| API endpoints | `GET https://api.anthropic.com/api/oauth/usage` (rate-limit windows) and `GET https://api.anthropic.com/api/oauth/profile` (account + plan) |
+| Auth headers | `Authorization: Bearer <access_token>` |
+| Authorize / token | `https://platform.claude.com/oauth/authorize` → `POST https://platform.claude.com/v1/oauth/token` (PKCE S256, **JSON** body, not form-encoded) |
+| Credentials source | AgentBar browser login stored in macOS Keychain |
+| Displayed metrics | Every usage window the API returns, currently `five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet` |
+
+Claude Code is a public OAuth client — PKCE, no client secret — so its client ID lives in
+`ClaudeOAuthConfiguration` (Swift) and `ClaudeQuotaService` (C#). The callback listens on port
+54546/54547 rather than Claude Code's own 54545, so a concurrent `claude login` cannot capture
+AgentBar's callback.
+
+Usage windows are keyed by name at the top level of the response, each carrying `utilization`
+(0–100) and `resets_at`. Anthropic adds windows over time, so both platforms accept **any**
+top-level object with a `utilization` value instead of matching a fixed key list, skip windows
+reporting `is_enabled: false`, and humanize unknown keys for display. When adding rounding logic
+here, note that Swift rounds halves away from zero while .NET rounds to even — the C# side pins
+`MidpointRounding.AwayFromZero` so both platforms render the same labels.
+
+AgentBar does not read Claude Code's own `auth.json` or `.credentials.json`. Browser sign-in is the
+only way to add a Claude account, matching Codex, GitHub Copilot, and Gemini.
+
+### Z.ai Coding Plan (`AgentProviderKind.zai`)
+
+| Property | Value |
+|---|---|
+| API endpoint | `GET https://api.z.ai/api/monitor/usage/quota/limit` |
+| Auth headers | `Authorization: Bearer <coding_plan_token>` with raw-token retry for compatibility |
+| Credentials source | AgentBar Z.ai Coding Plan credential stored in macOS Keychain |
+| Displayed metrics | Dynamic `limits[]` list returned by the usage monitor API, including 5-hour token, weekly token, and MCP/monthly limits when present |
+
+Only the international Z.ai host is supported. The service uses `https://api.z.ai` for monitor data and the settings link opens `https://z.ai/manage-apikey/coding-plan/personal/usage`. Do not call the general pay-as-you-go endpoint for quota data.
+
 ---
 
 ## Data model
@@ -150,9 +187,46 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 - Codex: `~/Library/Application Support/AgentBar/CodexAccounts`
 - GitHub Copilot: `~/Library/Application Support/AgentBar/GitHubCopilotAccounts`
 - Gemini: `~/Library/Application Support/AgentBar/GeminiAccounts`
-- Claude: `~/.config/claude-code/auth.json` (read-only local Claude Code auth detection)
+- Claude: `~/Library/Application Support/AgentBar/ClaudeAccounts`
+- Z.ai: `~/Library/Application Support/AgentBar/ZAIAccounts`
+- Junie: `~/Library/Application Support/AgentBar/JunieAccounts`
 
-AgentBar intentionally does not read local CLI login files for Codex, GitHub Copilot, or Gemini by default. Claude is the exception because Claude browser sign-in and quota APIs are not wired yet.
+The installed `com.agentbar.menu` app uses the `AgentBar Auth v3` Keychain service. Ad-hoc `swift run` builds use `AgentBar Auth Debug v2`; never make them share a service because an unsigned debug build's designated requirement is cdhash-based and changes after rebuilding. The installed app migrates `AgentBar Auth v2` and then the legacy `AgentBar Auth` vault, leaving old items intact after migration. `scripts/install-app.sh` must prefer an Apple Development identity with a stable Team ID so Keychain authorization survives local rebuilds.
+
+Quota history is stored separately at `~/Library/Application Support/AgentBar/quota-history.sqlite3` using SQLite WAL mode. The database contains normalized account/window metadata and quota samples, never credentials or complete API responses.
+
+History rules:
+
+- Record the first successful snapshot for every `provider + account + metric.id`.
+- Record meaningful changes immediately: at least 0.1 percentage point, changed labels, a reset schedule outside the five-minute equivalence tolerance, or Unlimited state changes.
+- Treat any meaningful balance recovery as a candidate and record the next successful snapshot even when otherwise unchanged. The query path keeps the recovery only when that sample still shows an improved balance on an equivalent reset schedule; otherwise it removes the transient point, including legacy rows already in SQLite.
+- Treat a sudden transition from a non-exhausted value to exactly 0% remaining as a terminal-exhaustion candidate. Keep it only when the next successful sample is also exhausted on an equivalent reset schedule. Ordinary usage increases still record immediately.
+- After recording a reset schedule candidate, also record the next successful snapshot even when otherwise unchanged so the query path can confirm or reject the candidate.
+- Record an unchanged heartbeat after 15 minutes since the last sample.
+- Persist reset schedule changes as candidates, then derive reset events at query time only after the following successful sample confirms the new schedule. Treat deadlines within five minutes, or rolling deadlines with equivalent horizons, as the same schedule. A confirmed later schedule is a reset only after the old deadline is reached or the used balance falls by at least 0.1 percentage point; a confirmed deadline disappearing after it expires is also a reset. Never classify `nil` to a future deadline as a reset. Derived reset events are drawn as dashed vertical lines in the chart.
+- Keep disappeared dynamic metrics and removed accounts until the user clears their history.
+- History errors are additive and must never replace or fail the live provider snapshot.
+- Keep history macOS-only for v1; do not add it to the widget state or Windows project without a dedicated parity change.
+
+### History window sidebar architecture
+
+The History window is an AppKit-managed singleton auxiliary window, so its sidebar must also use the native AppKit controller hierarchy. Keep `AgentBarHistoryWindowController` configured as follows:
+
+- The window's `contentViewController` is an `NSSplitViewController` with one `NSSplitViewItem(sidebarWithViewController:)` and one non-collapsible detail item.
+- SwiftUI remains responsible only for the sidebar and detail content through separate `NSHostingController` instances. Keep both hosting controllers' `sizingOptions` empty so intrinsic SwiftUI widths cannot override the split view during an animation.
+- Keep the sidebar's `collapseBehavior` set to `.preferResizingSiblingsWithFixedSplitView`; the window remains fixed while the detail pane resizes continuously.
+- Keep the split view autosave name so the user's divider position and collapsed state are restored by AppKit.
+- The toolbar button uses the custom `AgentBarHistoryToggleSidebar` item identifier, the `sidebar.left` system symbol, and the native `NSSplitViewController.toggleSidebar(_:)` action. It must remain the first toolbar item and stay at the leading edge in both expanded and collapsed states.
+
+Do not replace this with a hand-animated `HStack`, width state, or offset animation. Earlier custom implementations animated only the declared sidebar width while SwiftUI resolved the detail pane's minimum/intrinsic width at the end, producing a smooth first half followed by a jump.
+
+Do not put `NavigationSplitView` back inside the manually created History `NSWindow`. In this hosting arrangement, its reveal animation can translate the detail before completing the width reflow, and SwiftUI owns an automatically placed sidebar toggle that moves to the detail's trailing edge after collapse.
+
+Do not use `NSToolbarItem.Identifier.toggleSidebar` for this window. AppKit treats that identifier as a special sidebar-relative item and places it at the sidebar's trailing boundary; when the sidebar is hidden, the button can end up at the far right of the toolbar. The custom identifier fixes placement while retaining the system split-controller action and animation.
+
+When changing this window, verify both directions on the installed Release app: collapse must resize the detail continuously, expand must do the same without a final width jump, and the toolbar button must keep the same leading position in both states.
+
+AgentBar does not read local CLI login files for any provider. Every account is added through AgentBar's own sign-in and stored in the Keychain.
 
 ---
 
@@ -229,6 +303,8 @@ The app runs as a menu-bar-only accessory (`LSUIElement = true`) — no Dock ico
 swift run AgentBar
 ```
 
+This development executable uses a separate debug Keychain vault. Use `./scripts/install-app.sh` to test existing installed-app accounts and widget behavior.
+
 Errors and key events print directly to the terminal. Example output:
 
 ```
@@ -274,12 +350,32 @@ Test targets:
 | `decodesGeminiQuotaPayload` | Happy-path JSON → `AgentQuotaSnapshot` for Gemini with per-model metrics |
 | `geminiQuotaDefaultsToEmptyWhenNoBuckets` | Empty `buckets` → 0 metrics, snapshot still produced |
 | `geminiFiltersOutUnavailableModels` | Models with epoch reset + 0 remaining are excluded |
+| `decodesClaudeUsageWindowsFromOAuthResponse` | Happy-path `/api/oauth/usage` JSON → windows, ordering, and disabled-window filtering |
+| `claudeUsageAcceptsWindowsAddedByAnthropicLater` | Unknown window keys are humanized and non-window fields ignored |
+| `claudeProfileDecodesNestedAccountAndPlan` | Nested account/organization profile → label and `claude_max` → `Claude Max` |
+| `claudeLoginAuthorizeURLCarriesPKCEAndState` | Authorize URL host, path, PKCE challenge method, scope, and state |
+| `quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat` | Sampling threshold, deduplication, and label carry-forward |
+| `quotaHistoryConfirmsScheduleBeforeDerivingReset` | Schedule candidates require a repeated state before a reset is derived |
+| `quotaHistoryNormalizesLegacyRollingScheduleEvents` | Legacy rolling countdown changes are filtered while confirmed real schedule advances remain resets |
+| `quotaHistoryRejectsAlternatingStaleSchedules` | Alternating stale/current provider responses remove transient balance recoveries and do not create reset markers |
+| `quotaHistoryKeepsConfirmedBalanceRecoveryWhenUsageResumes` | A real reset remains visible when the next sample still has improved balance and usage has resumed |
+| `quotaHistoryHidesUnconfirmedTrailingBalanceRecovery` | A final balance recovery is hidden until another successful sample confirms it |
+| `quotaHistoryRejectsTransientZeroRemainingSpike` | A lone 0% remaining response between matching stable values is removed from existing history |
+| `quotaHistoryConfirmsRealTerminalExhaustion` | A 0% remaining value is hidden until the next successful sample confirms exhaustion |
+| `quotaHistoryIgnoresScheduleJitterAndIdleWindowActivation` | Small deadline drift and a newly activated idle quota window are not resets |
+| `quotaHistoryRecognizesConfirmedDeadlineToNilReset` | An expired deadline that stably disappears is recognized as a reset |
+| `quotaHistoryRangeUsesPrecedingSampleForResetContext` | Range queries use the previous sample to classify events at the boundary |
+| `quotaHistoryDownsamplingPreservesEndpointsAndExtremes` | Downsampling keeps first/last/extreme points and reset events within bucket count |
+| `quotaHistoryHandlesUnlimitedAndDeletesByCutoff` | Unlimited state and explicit retention cleanup |
+| `historyWindowUsesNativeSidebarSplitView` | Native split items, fixed-window collapse behavior, and toolbar configuration |
 
 ---
 
 ## Widget extension
 
 The macOS desktop widget (`Sources/AgentBarWidgetExtension/AgentBarWidgetExtension.swift`) shows **one** agent account per widget instance. The list of available accounts is materialized into a shared `AgentWidgetState` blob written by the host app into an App Group container, and read back by the widget timeline provider through `AgentWidgetStateStore`.
+
+Both `AgentBar.entitlements` and `AgentBarWidget.entitlements` must include `CP22VZ6846.com.agentbar.menu.shared`. Keep the Team ID prefix: unlike a `group.` identifier, this macOS-only form is authorized by the signing Team ID and does not require an embedded provisioning profile. A manually signed build that claims an unprovisioned `group.` container triggers macOS's App Data permission prompt. Share widget state through JSON files in that App Group; do not add a duplicate `UserDefaults(suiteName:)` channel or call `synchronize()`, because synchronous App Group preference access can block launch in `cfprefsd`. Before resolving the App Group container, verify the current process actually carries the entitlement with `SecTaskCopyValueForEntitlement`; unsigned tests and `swift run` builds must fall back to their own Application Support directory. The host app may otherwise write only to its own Application Support directory. Never write directly into `~/Library/Containers/com.agentbar.menu.widget/Data`: macOS treats the extension container as another app's protected data, which causes an App Data permission prompt on launch and can block file writes. The extension-local paths in `widgetLocalSnapshotURLs` are read-only legacy fallbacks. Do not reuse the retired `group.com.agentbar.shared` or `group.com.agentbar.menu.shared` identifiers: those containers may belong to older or unprovisioned builds and can themselves trigger the same permission prompt.
 
 Each widget instance is configured via a `WidgetConfigurationIntent`:
 

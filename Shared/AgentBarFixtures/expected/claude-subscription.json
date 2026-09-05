@@ -1,7 +1,0 @@
-{
-  "provider": "claude",
-  "accountLabel": "dev@example.com",
-  "planType": "max",
-  "sourceSummary": "Claude Code local auth",
-  "metrics": []
-}
