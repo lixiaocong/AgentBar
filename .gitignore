@@ -24,3 +24,7 @@ Windows/artifacts/
 
 # macOS
 .DS_Store
+
+# Linux Python caches (runtime data belongs in XDG_DATA_HOME, outside the repo)
+__pycache__/
+*.py[cod]

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23087e78'/%3E%3Cpath d='M8 24V14m8 10V8m8 16V11' stroke='white' stroke-width='4'/%3E%3C/svg%3E">
+  <title>AgentBar · Linux</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/quota-display.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login-shell" hidden>
+    <form id="login-form" class="login-card">
+      <div class="brand-mark" aria-hidden="true">▥</div>
+      <p class="eyebrow">AGENTBAR / LINUX</p>
+      <h1>你的 Agent 用量，一目了然。</h1>
+      <p class="muted">连接服务器，查看实时配额与持续记录的用量历史。</p>
+      <label for="access-key">Web 访问密钥</label>
+      <input id="access-key" name="key" type="password" autocomplete="current-password" required placeholder="输入服务器上的 Web 访问密钥">
+      <p class="hint">密钥位于服务启动时显示的 <code>web-access-key</code> 文件中。</p>
+      <button type="submit" class="primary">连接服务器 <span aria-hidden="true">→</span></button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+  <div id="dashboard" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="AgentBar 首页"><span class="brand-mark" aria-hidden="true">▥</span> AgentBar</a>
+      <div class="environment"><span class="status-dot"></span> LINUX SERVER <span class="pill">WEB</span></div>
+      <p class="nav-label">WORKSPACE</p>
+      <nav aria-label="主导航">
+        <button id="nav-overview" class="nav-item active"><span aria-hidden="true">▦</span> 用量概览</button>
+        <button id="nav-history" class="nav-item"><span aria-hidden="true">◷</span> 用量历史</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button id="disconnect" class="text-button">断开 Web 连接 ↗</button>
+      </div>
+    </aside>
+    <main>
+      <header class="page-header"><div><p class="eyebrow">YOUR AGENTS, IN VIEW</p><h1 id="page-title">用量概览</h1><p id="page-subtitle" class="muted">关注剩余额度，把精力留给开发。</p></div><div class="header-actions"><button id="refresh" class="secondary">↻ 刷新</button><button id="add-account" class="primary">＋ 添加账户</button></div></header>
+      <div id="notice" role="status" hidden></div>
+      <div class="summary-grid">
+        <div class="summary-card"><span>已添加账户</span><strong id="account-count">—</strong></div>
+        <div class="summary-card"><span>已记录样本</span><strong id="sample-count">—</strong></div>
+        <div class="summary-card"><span>采样状态</span><strong id="sampling-state" class="small-value">连接中</strong></div>
+      </div>
+      <section id="overview" aria-label="账户用量"><div class="section-heading"><h2>Agent 账户 <span id="account-badge" class="count-badge">0</span></h2><span class="hint">剩余配额 · 服务器实时查询</span></div><div id="account-grid" class="account-grid"></div></section>
+      <section id="history" hidden aria-label="用量历史">
+        <div class="history-toolbar"><label for="history-account">账户 <select id="history-account"></select></label><div id="ranges" class="segmented" role="group" aria-label="历史时间范围"><button data-range="hour">1h</button><button data-range="halfDay">12h</button><button data-range="day" class="active">1d</button><button data-range="week">7d</button><button data-range="month">30d</button><button data-range="all">全部</button></div></div>
+        <p class="hint history-note">曲线表示剩余配额；虚线标记经后续样本确认的重置。停止采样的账户仍保留历史。</p>
+        <div id="history-charts"></div>
+      </section>
+    </main>
+  </div>
+  <dialog id="account-dialog" aria-labelledby="dialog-title">
+    <div class="dialog-header"><div><p class="eyebrow">LOCAL CREDENTIALS</p><h2 id="dialog-title">添加本地账户</h2></div><button id="close-dialog" class="icon-button" aria-label="关闭">×</button></div>
+    <p class="muted">选择要展示并持续采样的账户。凭据由本机 CLI 管理。</p>
+    <div id="available-accounts"></div>
+    <p id="account-error" class="error" role="alert"></p>
+    <div class="dialog-actions"><button id="reload-credentials" class="secondary">重新扫描</button><button id="save-accounts" class="primary">添加选中账户</button></div>
+  </dialog>
+</body>
+</html>

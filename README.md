@@ -1,6 +1,6 @@
 # AgentBar
 
-AgentBar keeps coding-agent quota visible from the macOS menu bar or Windows system tray. See remaining quota, usage windows, reset times, and multiple accounts without opening each provider's dashboard.
+AgentBar keeps coding-agent quota visible from the macOS menu bar, Windows system tray, or a browser connected to a Linux server. See remaining quota, usage windows, reset times, and multiple accounts without opening each provider's dashboard.
 
 [Download the latest release](https://github.com/lixiaocong/AgentBar/releases/latest)
 
@@ -24,7 +24,8 @@ Settings lets you add or remove accounts, choose what appears in the menu bar, c
 - Supports multiple accounts for the same provider.
 - Displays dynamically returned model and plan quotas instead of a fixed list.
 - Keeps up to three selected accounts visible in the macOS menu bar.
-- Records local quota history on macOS so usage and resets are easy to review.
+- Records local quota history on macOS and Linux so usage and resets are easy to review.
+- Runs a Linux Web dashboard with continuous background collection using selected local CLI credentials.
 - Includes a configurable medium-sized macOS desktop widget for one account.
 
 ## Supported Services
@@ -58,6 +59,8 @@ AgentBar is a menu bar app, so it does not open a normal Dock window. If macOS a
 3. Use the AgentBar icon in the system tray to open usage or Settings.
 
 ## Add Accounts
+
+For Linux, see the [Linux Web guide](Linux/README.md). Run `python3 -m agentbar` from `Linux/`, or install its systemd user service with `bash Linux/install-service.sh`. The Web interface lets you select existing local CLI accounts; removing an account stops collection while preserving its credentials and history.
 
 Open **Settings...** from AgentBar:
 

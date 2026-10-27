@@ -1,0 +1,22 @@
+[Unit]
+Description=AgentBar Linux Web quota history collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 安装时由 install-service.sh 写入当前仓库的绝对路径。
+WorkingDirectory=@LINUX_DIR@
+ExecStart=/usr/bin/python3 -m agentbar --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=100
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/agentbar
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

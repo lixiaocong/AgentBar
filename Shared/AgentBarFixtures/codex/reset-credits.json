@@ -1,0 +1,8 @@
+{
+  "available_count": 3,
+  "credits": [
+    {"id": "credit-one-e2907349", "status": "available", "reset_type": "codex_rate_limits", "expires_at": "2026-07-18T00:33:47.309841Z"},
+    {"id": "credit-redeemed-done", "status": "redeemed", "expires_at": "2026-07-12T00:00:00Z"},
+    {"id": "credit-two-0284334e", "status": "available", "resetType": "codex_rate_limits", "expiresAt": 1785109119931.028}
+  ]
+}
