@@ -336,6 +336,19 @@ actor QuotaHistoryStore: QuotaHistoryQuerying {
         return deleted
     }
 
+    func deleteAccountHistory(accountKey: String) async throws {
+        let database = try openDatabaseIfNeeded()
+        let statement = try prepare(
+            "DELETE FROM history_accounts WHERE account_key = ?",
+            database: database
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(accountKey, to: 1, in: statement, database: database)
+        // Foreign keys cascade to every window and sample owned by this account.
+        try stepDone(statement, database: database, operation: "delete account history")
+        try cleanupOrphansAndCompact(database: database)
+    }
+
     func rebuildDatabase() async throws {
         closeDatabase()
         for url in databaseRelatedURLs() where fileManager.fileExists(atPath: url.path) {

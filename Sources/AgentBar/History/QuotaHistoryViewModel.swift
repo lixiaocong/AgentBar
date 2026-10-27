@@ -19,6 +19,20 @@ final class QuotaHistoryViewModel {
     var range: QuotaHistoryRange = .day
     var isLoading = false
     var errorMessage: String?
+    var deletionError: String?
+    private(set) var isDeleting = false
+
+    func deleteHistory(for account: QuotaHistoryAccount) async {
+        guard !isDeleting else { return }
+        isDeleting = true
+        defer { isDeleting = false }
+        deletionError = nil
+        if await manager.deleteAccountHistory(accountKey: account.accountKey) {
+            await load()
+        } else {
+            deletionError = manager.lastError ?? "History maintenance is already in progress. Try again shortly."
+        }
+    }
 
     init(model: AppModel, manager: QuotaHistoryManager) {
         self.model = model

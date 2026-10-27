@@ -114,6 +114,42 @@ func quotaAggregatesPreserveUnlimitedInsteadOfShowingAFinitePercentage() {
     #expect(aggregates[0].remainingPercent == 87.5)
 }
 
+@Test
+func gptReserveQuotaRemainsVisibleButDoesNotDriveOverallStatus() {
+    let primary = quotaMetric(id: "window-10080", title: "7 day window", remainingPercent: 69)
+    let reserve = quotaMetric(
+        id: "additional-1-window-10080",
+        title: "GPT-Reserve 7 day window",
+        remainingPercent: 1
+    )
+    let snapshot = quotaSnapshot(accountLabel: "first@example.com", metrics: [primary, reserve])
+
+    #expect(snapshot.metrics.map(\.id) == [primary.id, reserve.id])
+    #expect(primary.participatesInOverallQuotaStatus)
+    #expect(!reserve.participatesInOverallQuotaStatus)
+    #expect(snapshot.highlightMetric?.id == primary.id)
+}
+
+@Test
+func gptReserveQuotaIsExcludedFromMultiAccountTotals() {
+    let snapshots = ["first@example.com", "second@example.com"].map { account in
+        quotaSnapshot(
+            accountLabel: account,
+            metrics: [
+                quotaMetric(id: "window-10080", title: "7 day window", remainingPercent: 60),
+                quotaMetric(
+                    id: "additional-1-window-10080",
+                    title: "gpt reserve 7 day window",
+                    remainingPercent: 1
+                ),
+            ]
+        )
+    }
+
+    let aggregates = AgentQuotaMetricAggregation.completeAggregates(for: snapshots)
+    #expect(aggregates.map(\.id) == ["window-10080"])
+}
+
 private func quotaSnapshot(
     accountLabel: String,
     metrics: [AgentQuotaMetric]

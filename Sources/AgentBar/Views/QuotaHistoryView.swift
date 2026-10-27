@@ -7,11 +7,36 @@ import AgentBarCore
 
 struct QuotaHistorySidebarView: View {
     @Bindable var viewModel: QuotaHistoryViewModel
+    @State private var accountToDelete: QuotaHistoryAccount?
 
     var body: some View {
         accountSidebar
         .onChange(of: viewModel.selectedAccountKey) {
             Task { await viewModel.loadSelection() }
+        }
+        .confirmationDialog(
+            "Delete account history?",
+            isPresented: Binding(
+                get: { accountToDelete != nil },
+                set: { if !$0 { accountToDelete = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: accountToDelete
+        ) { account in
+            Button("Delete History", role: .destructive) {
+                Task { await viewModel.deleteHistory(for: account) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { account in
+            Text("Delete all quota history for \(account.displayLabel)? This cannot be undone. The account will remain signed in. If it is still configured, future refreshes will start recording new history.")
+        }
+        .alert("Unable to Delete History", isPresented: Binding(
+            get: { viewModel.deletionError != nil },
+            set: { if !$0 { viewModel.deletionError = nil } }
+        )) {
+            Button("OK") { viewModel.deletionError = nil }
+        } message: {
+            Text(viewModel.deletionError ?? "")
         }
     }
 
@@ -24,6 +49,12 @@ struct QuotaHistorySidebarView: View {
                         ForEach(providerAccounts) { account in
                             accountRow(account)
                                 .tag(account.accountKey)
+                                .contextMenu {
+                                    Button("Delete Account History...", role: .destructive) {
+                                        accountToDelete = account
+                                    }
+                                    .disabled(viewModel.isDeleting)
+                                }
                         }
                     }
                 }
@@ -31,7 +62,19 @@ struct QuotaHistorySidebarView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
-            Text("Recorded while AgentBar is running")
+            HStack {
+                Text("Recorded while AgentBar is running")
+                Spacer(minLength: 4)
+                Button {
+                    accountToDelete = viewModel.selectedAccount
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete selected account history")
+                .accessibilityLabel("Delete selected account history")
+                .disabled(viewModel.selectedAccount == nil || viewModel.isDeleting)
+            }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

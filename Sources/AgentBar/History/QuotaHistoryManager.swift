@@ -120,6 +120,13 @@ final class QuotaHistoryManager: QuotaHistoryRecording {
     }
 
     @discardableResult
+    func deleteAccountHistory(accountKey: String) async -> Bool {
+        await performMaintenance {
+            try await self.store.deleteAccountHistory(accountKey: accountKey)
+        }
+    }
+
+    @discardableResult
     func rebuildDatabase() async -> Bool {
         await performMaintenance {
             try await self.store.rebuildDatabase()

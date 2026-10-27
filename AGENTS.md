@@ -177,7 +177,9 @@ AgentQuotaMetric
   resetsAt       Date?
 ```
 
-`highlightMetric` — the metric with the highest `usedPercent` across **all** providers — drives the menu-bar title and icon.
+`highlightMetric` — the participating metric with the highest `usedPercent` across providers — drives the menu-bar title and icon.
+
+Codex `gpt-reserve` metrics remain visible as account detail and in quota history, but do not participate in `highlightMetric`, provider totals, menu-bar status, or widget overall status. Reserve capacity is supplemental and must not make the primary quota state look exhausted.
 
 ---
 
@@ -194,6 +196,8 @@ Credentials are stored by AgentBar in macOS Keychain. Non-secret account markers
 The installed `com.agentbar.menu` app uses the `AgentBar Auth v3` Keychain service. Ad-hoc `swift run` builds use `AgentBar Auth Debug v2`; never make them share a service because an unsigned debug build's designated requirement is cdhash-based and changes after rebuilding. The installed app migrates `AgentBar Auth v2` and then the legacy `AgentBar Auth` vault, leaving old items intact after migration. `scripts/install-app.sh` must prefer an Apple Development identity with a stable Team ID so Keychain authorization survives local rebuilds.
 
 Quota history is stored separately at `~/Library/Application Support/AgentBar/quota-history.sqlite3` using SQLite WAL mode. The database contains normalized account/window metadata and quota samples, never credentials or complete API responses.
+
+Settings, the menu popover, and the menu-bar quota bars must all use `AppModel.providerOrder` followed by each provider's persisted `configuredAccountDirectories` order. `providerOrder` preserves any existing `providerDisplayOrder` preference; providers themselves are not draggable. Menu-bar account selection controls membership only: filter the ordered accounts by the selected IDs, never display them in checkbox-selection order. Settings uses one native `List`, one `Section` per provider, and `ForEach.onMove` for its account rows. Keep those rows directly inside the list section so the system can provide row reordering; do not replace it with drag icons and custom payloads on a `ScrollView`/`VStack`. Account moves update the persisted array without refreshing quota APIs or altering credentials. Model tests alone do not verify that dragging actually reaches the reorder callback.
 
 History rules:
 

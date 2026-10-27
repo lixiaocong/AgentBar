@@ -95,6 +95,45 @@ func appModelChoosesAccountsForMenuBarInsteadOfProviders() {
 
 @Test
 @MainActor
+func appModelMenuBarSelectionPreservesProviderDisplayOrder() {
+    let defaults = testDefaults(named: #function)
+    defaults.set(["gemini", "codex", "githubCopilot"], forKey: "providerDisplayOrder")
+    defaults.set([String](), forKey: "menuBarSelectedAccountIDs")
+    let model = AppModel(userDefaults: defaults, startImmediately: false)
+    model.menuBarMaxDisplayedAccounts = 3
+
+    model.addConfiguredAccountDirectory(CodexAppAuthStore.accountDirectory(for: "order-codex"), for: .codex)
+    addAppManagedAccount(to: model, provider: .githubCopilot, accountID: "order-copilot")
+    addAppManagedAccount(to: model, provider: .gemini, accountID: "order-gemini")
+    model.codexSnapshot = makeSnapshot(provider: .codex, usedPercent: 10, remainingLabel: "90% left")
+    model.copilotSnapshot = makeSnapshot(provider: .githubCopilot, usedPercent: 20, remainingLabel: "80% left")
+    model.geminiSnapshot = makeSnapshot(provider: .gemini, usedPercent: 30, remainingLabel: "70% left")
+    model.providerAvailability = .all
+
+    for provider in [AgentProviderKind.githubCopilot, .codex, .gemini] {
+        let account = model.accountStatuses(for: provider)[0].account
+        model.setAccount(account, shownInMenuBar: true)
+    }
+
+    let expected: [AgentProviderKind] = [.gemini, .codex, .githubCopilot]
+    #expect(Array(model.providerOrder.prefix(3)) == expected)
+    #expect(model.availableProviders.flatMap(model.visibleAccountStatuses(for:)).map(\.provider) == expected)
+    #expect(model.statusIconQuotaBars.map(\.provider) == expected.map(Optional.some))
+    #expect(model.statusIconQuotaBars.map(\.remainingPercent) == [70, 90, 80])
+
+    let geminiAccount = model.accountStatuses(for: .gemini)[0].account
+    model.setAccount(geminiAccount, shownInMenuBar: false)
+    #expect(model.statusIconQuotaBars.map(\.provider) == [.codex, .githubCopilot])
+    model.setAccount(geminiAccount, shownInMenuBar: true)
+    #expect(model.statusIconQuotaBars.map(\.provider) == expected.map(Optional.some))
+
+    let reloaded = AppModel(userDefaults: defaults, startImmediately: false)
+    reloaded.providerAvailability = .all
+    #expect(reloaded.statusIconQuotaBars.map(\.provider) == expected.map(Optional.some))
+}
+
+@Test
+@MainActor
 func appModelLoadsStoredPreferences() {
     let defaults = testDefaults(named: #function)
     defaults.set(3, forKey: "menuBarMaxDisplayedAgents")
@@ -108,6 +147,88 @@ func appModelLoadsStoredPreferences() {
 
     #expect(model.menuBarMaxDisplayedAccounts == 3)
     #expect(model.refreshIntervalSeconds == 45)
+}
+
+@Test
+@MainActor
+func appModelUsesStoredProviderOrderForVisibleProviders() {
+    let defaults = testDefaults(named: #function)
+    let expectedOrder: [AgentProviderKind] = [
+        .gemini,
+        .codex,
+        .githubCopilot,
+        .claude,
+        .zai,
+        .junie,
+    ]
+    defaults.set(expectedOrder.map(\.rawValue), forKey: "providerDisplayOrder")
+    let model = AppModel(
+        userDefaults: defaults,
+        providerAvailabilityResolver: { .all },
+        startImmediately: false
+    )
+    model.providerAvailability = .all
+
+    #expect(model.providerOrder == expectedOrder)
+    #expect(model.availableProviders == expectedOrder)
+
+    let reloaded = AppModel(userDefaults: defaults, startImmediately: false)
+    #expect(reloaded.providerOrder == expectedOrder)
+}
+
+@Test
+@MainActor
+func appModelNormalizesStoredProviderOrder() {
+    let defaults = testDefaults(named: #function)
+    defaults.set(
+        ["junie", "unknown-provider", "codex", "junie"],
+        forKey: "providerDisplayOrder"
+    )
+
+    let model = AppModel(userDefaults: defaults, startImmediately: false)
+
+    #expect(model.providerOrder == [
+        .junie,
+        .codex,
+        .githubCopilot,
+        .gemini,
+        .claude,
+        .zai,
+    ])
+}
+
+@Test
+@MainActor
+func appModelPersistsAccountOrderWithinProvider() {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(userDefaults: defaults, startImmediately: false)
+    let firstDirectory = CodexAppAuthStore.accountDirectory(for: "ordered-account-one")
+    let secondDirectory = CodexAppAuthStore.accountDirectory(for: "ordered-account-two")
+    let thirdDirectory = CodexAppAuthStore.accountDirectory(for: "ordered-account-three")
+
+    model.addConfiguredAccountDirectory(firstDirectory, for: .codex)
+    model.addConfiguredAccountDirectory(secondDirectory, for: .codex)
+    model.addConfiguredAccountDirectory(thirdDirectory, for: .codex)
+
+    let otherProviderAccounts = model.configuredAccounts(for: .gemini)
+    model.moveAccounts(for: .codex, fromOffsets: IndexSet(integer: 0), toOffset: 3)
+
+    let expectedOrder = [
+        ConfiguredAccountDirectory(path: secondDirectory.path),
+        ConfiguredAccountDirectory(path: thirdDirectory.path),
+        ConfiguredAccountDirectory(path: firstDirectory.path),
+    ]
+    #expect(model.configuredAccounts(for: .codex) == expectedOrder)
+    #expect(model.accountStatuses(for: .codex).map(\.account.directory) == expectedOrder)
+
+    let reloaded = AppModel(userDefaults: defaults, startImmediately: false)
+    #expect(reloaded.configuredAccounts(for: .codex) == expectedOrder)
+
+    model.moveAccounts(for: .codex, fromOffsets: IndexSet(integer: 2), toOffset: 0)
+    #expect(model.configuredAccounts(for: .codex).map(\.path) == [
+        firstDirectory.path, secondDirectory.path, thirdDirectory.path,
+    ])
+    #expect(model.configuredAccounts(for: .gemini) == otherProviderAccounts)
 }
 
 @Test
@@ -133,6 +254,60 @@ func appModelHidesUnavailableProvidersFromMenuBarSummary() {
 
     #expect(model.availableProviders == [.codex, .gemini])
     #expect(model.menuBarTitle == "Codex 34%  Gemini 100%")
+}
+
+@Test
+@MainActor
+func appModelIgnoresGPTReserveQuotaInOverallStatus() {
+    let defaults = testDefaults(named: #function)
+    let model = AppModel(
+        userDefaults: defaults,
+        providerAvailabilityResolver: {
+            AgentProviderAvailability(codex: true, githubCopilot: false, gemini: false, claude: false)
+        },
+        startImmediately: false
+    )
+    model.addConfiguredAccountDirectory(
+        CodexAppAuthStore.accountDirectory(for: "account-with-reserve"),
+        for: .codex
+    )
+    model.codexSnapshot = AgentQuotaSnapshot(
+        provider: .codex,
+        accountLabel: "test@example.com",
+        planType: "Pro",
+        modelName: nil,
+        sourceSummary: "Test",
+        metrics: [
+            AgentQuotaMetric(
+                id: "window-10080",
+                title: "7 day window",
+                usedPercent: 31,
+                usedLabel: "31% used",
+                remainingLabel: "69% left",
+                resetsAt: nil
+            ),
+            AgentQuotaMetric(
+                id: "additional-1-window-10080",
+                title: "gpt-reserve 7 day window",
+                usedPercent: 99,
+                usedLabel: "99% used",
+                remainingLabel: "1% left",
+                resetsAt: nil
+            ),
+        ],
+        updatedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+
+    #expect(model.highlightMetric?.id == "window-10080")
+    #expect(model.menuBarTitle == "Codex 69%")
+    #expect(model.statusIconQuotaBars == [
+        MenuBarStatusImage.Bar(
+            provider: .codex,
+            label: "cx",
+            remainingPercent: 69,
+            windowDuration: 7 * 24 * 60 * 60
+        ),
+    ])
 }
 
 @Test

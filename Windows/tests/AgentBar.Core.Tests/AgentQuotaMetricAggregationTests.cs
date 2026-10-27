@@ -63,6 +63,33 @@ public sealed class AgentQuotaMetricAggregationTests
         Assert.Equal(87.5, aggregate.RemainingPercent);
     }
 
+    [Fact]
+    public void GptReserveQuotaRemainsVisibleButDoesNotDriveOverallStatus()
+    {
+        var primary = Metric("window-10080", "7 day window", 69);
+        var reserve = Metric("additional-1-window-10080", "GPT-Reserve 7 day window", 1);
+        var snapshot = Snapshot("first@example.com", primary, reserve);
+
+        Assert.Equal(new[] { primary.Id, reserve.Id }, snapshot.Metrics.Select(metric => metric.Id));
+        Assert.True(primary.ParticipatesInOverallQuotaStatus);
+        Assert.False(reserve.ParticipatesInOverallQuotaStatus);
+        Assert.Equal(primary.Id, snapshot.HighlightMetric?.Id);
+    }
+
+    [Fact]
+    public void GptReserveQuotaIsExcludedFromMultiAccountTotals()
+    {
+        var snapshots = new[] { "first@example.com", "second@example.com" }
+            .Select(account => Snapshot(
+                account,
+                Metric("window-10080", "7 day window", 60),
+                Metric("additional-1-window-10080", "gpt reserve 7 day window", 1)))
+            .ToArray();
+
+        var aggregate = Assert.Single(AgentQuotaMetricAggregation.CompleteAggregates(snapshots));
+        Assert.Equal("window-10080", aggregate.Id);
+    }
+
     private static AgentQuotaSnapshot Snapshot(string accountLabel, params AgentQuotaMetric[] metrics) =>
         new(
             AgentProviderKind.Codex,

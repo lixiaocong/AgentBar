@@ -9,9 +9,6 @@ struct SettingsView: View {
     let model: AppModel
     let historyManager: QuotaHistoryManager
     let openHistoryAction: () -> Void
-    private let providerColumns = [
-        GridItem(.adaptive(minimum: 260), alignment: .top)
-    ]
     @State private var isAddingJunieToken = false
     @State private var isAddingZAICredential = false
     @State private var isClearingHistory = false
@@ -31,96 +28,100 @@ struct SettingsView: View {
         @Bindable var model = model
         @Bindable var historyManager = historyManager
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Settings")
-                    .font(.title2.weight(.semibold))
+        List {
+            Text("Settings")
+                .font(.title2.weight(.semibold))
+                .listRowSeparator(.hidden)
 
-                GroupBox("Menu Bar") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Stepper(
-                            value: $model.menuBarMaxDisplayedAccounts,
-                            in: AppModel.minimumMenuBarMaxDisplayedAccounts ... AppModel.maximumMenuBarMaxDisplayedAccounts
-                        ) {
-                            LabeledContent(
-                                "Menu bar accounts",
-                                value: "\(model.menuBarMaxDisplayedAccounts)"
-                            )
-                        }
+            LaunchAtLoginSettings()
+                .listRowSeparator(.hidden)
 
-                        if model.hasExplicitMenuBarAccountSelection {
-                            Button("Use First Accounts Automatically") {
-                                model.resetMenuBarAccountSelection()
-                            }
-                        }
+            GroupBox("Menu Bar") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Stepper(
+                        value: $model.menuBarMaxDisplayedAccounts,
+                        in: AppModel.minimumMenuBarMaxDisplayedAccounts ... AppModel.maximumMenuBarMaxDisplayedAccounts
+                    ) {
+                        LabeledContent(
+                            "Menu bar accounts",
+                            value: "\(model.menuBarMaxDisplayedAccounts)"
+                        )
+                    }
 
-                        Stepper(
-                            value: $model.refreshIntervalSeconds,
-                            in: AppModel.minimumRefreshIntervalSeconds ... AppModel.maximumRefreshIntervalSeconds,
-                            step: AppModel.refreshIntervalStepSeconds
-                        ) {
-                            LabeledContent("Update interval", value: "\(model.refreshIntervalSeconds) seconds")
+                    if model.hasExplicitMenuBarAccountSelection {
+                        Button("Use First Accounts Automatically") {
+                            model.resetMenuBarAccountSelection()
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(4)
-                }
 
-                GroupBox("History") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Record quota history", isOn: $historyManager.isEnabled)
-
-                        LabeledContent("Sampling", value: "Every 15 minutes + changes")
-                            .font(.caption)
-
-                        LabeledContent("Samples", value: historyManager.stats.sampleCount.formatted())
-                            .font(.caption)
-
-                        LabeledContent("Oldest sample", value: oldestHistorySampleText)
-                            .font(.caption)
-
-                        LabeledContent("Database size", value: historyDatabaseSizeText)
-                            .font(.caption)
-
-                        if let error = historyManager.lastError {
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            Button("Rebuild History Database...") {
-                                isConfirmingHistoryRebuild = true
-                            }
-                            .disabled(historyManager.isMaintaining)
-                        }
-
-                        HStack(spacing: 10) {
-                            Button("Open History...") {
-                                openHistoryAction()
-                            }
-
-                            Button("Clear History...") {
-                                isClearingHistory = true
-                            }
-                            .disabled(historyManager.stats.sampleCount == 0 || historyManager.isMaintaining)
-
-                            if historyManager.isMaintaining {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(4)
-                }
-
-                LazyVGrid(columns: providerColumns, alignment: .leading, spacing: 14) {
-                    ForEach(AgentProviderKind.allCases) { provider in
-                        providerSettingsSection(provider)
+                    Stepper(
+                        value: $model.refreshIntervalSeconds,
+                        in: AppModel.minimumRefreshIntervalSeconds ... AppModel.maximumRefreshIntervalSeconds,
+                        step: AppModel.refreshIntervalStepSeconds
+                    ) {
+                        LabeledContent("Update interval", value: "\(model.refreshIntervalSeconds) seconds")
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+            }
+            .listRowSeparator(.hidden)
+
+            GroupBox("History") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Record quota history", isOn: $historyManager.isEnabled)
+
+                    LabeledContent("Sampling", value: "Every 15 minutes + changes")
+                        .font(.caption)
+
+                    LabeledContent("Samples", value: historyManager.stats.sampleCount.formatted())
+                        .font(.caption)
+
+                    LabeledContent("Oldest sample", value: oldestHistorySampleText)
+                        .font(.caption)
+
+                    LabeledContent("Database size", value: historyDatabaseSizeText)
+                        .font(.caption)
+
+                    if let error = historyManager.lastError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Button("Rebuild History Database...") {
+                            isConfirmingHistoryRebuild = true
+                        }
+                        .disabled(historyManager.isMaintaining)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("Open History...") {
+                            openHistoryAction()
+                        }
+
+                        Button("Clear History...") {
+                            isClearingHistory = true
+                        }
+                        .disabled(historyManager.stats.sampleCount == 0 || historyManager.isMaintaining)
+
+                        if historyManager.isMaintaining {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+            }
+            .listRowSeparator(.hidden)
+
+            ForEach(model.providerOrder) { provider in
+                providerSettingsSection(provider)
             }
         }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .buttonStyle(.bordered)
         .controlSize(.regular)
         .sheet(isPresented: $isAddingJunieToken) {
@@ -154,14 +155,17 @@ struct SettingsView: View {
         let statuses = model.accountStatuses(for: provider)
         let hasConfiguredAccounts = !statuses.isEmpty
 
-        GroupBox(groupTitle(for: provider)) {
-            VStack(alignment: .leading, spacing: 10) {
-                if !statuses.isEmpty {
-                    ForEach(statuses) { status in
-                        accountRow(status)
-                    }
-                }
+        Section(groupTitle(for: provider)) {
+            ForEach(statuses) { status in
+                accountRow(status, canReorder: statuses.count > 1)
+                    .listRowSeparator(.hidden)
+                    .moveDisabled(statuses.count < 2)
+            }
+            .onMove { source, destination in
+                model.moveAccounts(for: provider, fromOffsets: source, toOffset: destination)
+            }
 
+            VStack(alignment: .leading, spacing: 10) {
                 if model.supportsBrowserSignIn(for: provider) {
                     HStack(spacing: 8) {
                         Button(signInButtonTitle(for: provider, hasConfiguredAccounts: hasConfiguredAccounts)) {
@@ -214,19 +218,36 @@ struct SettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(4)
+            .padding(.vertical, 4)
+            .listRowSeparator(.hidden)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
-    private func accountRow(_ status: AgentAccountStatus) -> some View {
+    private func accountRow(_ status: AgentAccountStatus, canReorder: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let label = status.displayLabel {
-                NonHyphenatingLabel(label)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if let label = status.displayLabel {
+                    NonHyphenatingLabel(label)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text(status.displayPath)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                if canReorder {
+                    Image(systemName: "line.3.horizontal")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .help("Drag to reorder account")
+                        .accessibilityLabel("Reorder \(status.displayLabel ?? status.displayPath)")
+                }
             }
 
             if let snapshot = status.snapshot {
@@ -274,6 +295,7 @@ struct SettingsView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
+        .contentShape(Rectangle())
     }
 
     private func accountContext(

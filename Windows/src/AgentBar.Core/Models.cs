@@ -120,7 +120,10 @@ public sealed record AgentQuotaSnapshot(
     IReadOnlyList<AgentQuotaMetric> Metrics,
     DateTimeOffset UpdatedAt)
 {
-    public AgentQuotaMetric? HighlightMetric => Metrics.OrderByDescending(metric => metric.UsedPercent).FirstOrDefault();
+    public AgentQuotaMetric? HighlightMetric => Metrics
+        .Where(metric => metric.ParticipatesInOverallQuotaStatus)
+        .OrderByDescending(metric => metric.UsedPercent)
+        .FirstOrDefault();
 }
 
 public sealed record AgentQuotaMetric(
@@ -134,6 +137,17 @@ public sealed record AgentQuotaMetric(
     public double RemainingPercent => Math.Max(0, 100 - UsedPercent);
     public string PercentText => $"{Math.Round(RemainingPercent):0}%";
     public TimeSpan? WindowDuration => AgentQuotaWindowDuration.For(Id, Title);
+    public bool ParticipatesInOverallQuotaStatus
+    {
+        get
+        {
+            var words = Regex.Split(Title.Trim().ToLowerInvariant(), @"[^\p{L}\p{N}]+")
+                .Where(word => word.Length > 0)
+                .Take(2)
+                .ToArray();
+            return words.Length < 2 || words[0] != "gpt" || words[1] != "reserve";
+        }
+    }
 
     public static AgentQuotaMetric UsageWindow(int windowMinutes, double usedPercent, DateTimeOffset resetsAt) =>
         new(
@@ -189,6 +203,11 @@ public static class AgentQuotaMetricAggregation
         var aggregates = new List<AgentQuotaMetricAggregate>();
         foreach (var firstMetric in snapshots[0].Metrics)
         {
+            if (!firstMetric.ParticipatesInOverallQuotaStatus)
+            {
+                continue;
+            }
+
             var normalizedTitle = NormalizeTitle(firstMetric.Title);
             var matchingMetrics = snapshots
                 .Select(snapshot => snapshot.Metrics.FirstOrDefault(metric =>

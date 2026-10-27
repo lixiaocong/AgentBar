@@ -45,6 +45,7 @@ final class AppModel {
 
     private static let menuBarMaxDisplayedAccountsDefaultsKey = "menuBarMaxDisplayedAgents"
     private static let menuBarSelectedAccountIDsDefaultsKey = "menuBarSelectedAccountIDs"
+    private static let providerDisplayOrderDefaultsKey = "providerDisplayOrder"
     private static let refreshIntervalDefaultsKey = "refreshIntervalSeconds"
     private static let configuredAccountDirectoriesDefaultsKeyPrefix = "configuredAccountDirectories."
     private static let accountLabelsDefaultsKey = "configuredAccountLabels"
@@ -71,6 +72,7 @@ final class AppModel {
     private var codexAutoReconnectAttemptedAccountIDs: Set<String> = []
     private var codexRevokedAccountIDs: Set<String> = []
 
+    let providerOrder: [AgentProviderKind]
     var providerAvailability: AgentProviderAvailability
     var isRefreshing = false
     var isCodexLoginInProgress = false
@@ -221,6 +223,9 @@ final class AppModel {
         self.browserLoginTimeout = browserLoginTimeout
         self.configuredDirectoriesByProvider = Self.loadConfiguredDirectories(from: userDefaults)
         self.accountLabelsByID = userDefaults.dictionary(forKey: Self.accountLabelsDefaultsKey) as? [String: String] ?? [:]
+        self.providerOrder = Self.normalizedProviderOrder(
+            userDefaults.stringArray(forKey: Self.providerDisplayOrderDefaultsKey)
+        )
         self.providerAvailability = .none
         menuBarMaxDisplayedAccounts = Self.normalizedMenuBarMaxDisplayedAccounts(
             userDefaults.object(forKey: Self.menuBarMaxDisplayedAccountsDefaultsKey) as? Int
@@ -247,7 +252,7 @@ final class AppModel {
     }
 
     var availableProviders: [AgentProviderKind] {
-        providerAvailability.availableProviders
+        providerOrder.filter { providerAvailability.isAvailable($0) }
     }
 
     /// All successfully loaded snapshots for visible accounts.
@@ -259,7 +264,7 @@ final class AppModel {
 
     /// The most critical metric across all providers (highest usedPercent).
     var highlightMetric: AgentQuotaMetric? {
-        snapshots.flatMap(\.metrics).max { $0.usedPercent < $1.usedPercent }
+        snapshots.compactMap(\.highlightMetric).max { $0.usedPercent < $1.usedPercent }
     }
 
     var menuBarTitle: String {
@@ -351,6 +356,18 @@ final class AppModel {
 
     func configuredAccounts(for provider: AgentProviderKind) -> [ConfiguredAccountDirectory] {
         configuredDirectoriesByProvider[provider] ?? []
+    }
+
+    func moveAccounts(for provider: AgentProviderKind, fromOffsets source: IndexSet, toOffset destination: Int) {
+        let directories = configuredAccounts(for: provider)
+        guard let updated = Self.moving(directories, fromOffsets: source, toOffset: destination),
+              updated != directories else {
+            return
+        }
+
+        configuredDirectoriesByProvider[provider] = updated
+        persistConfiguredAccounts(for: provider)
+        persistWidgetState()
     }
 
     func accountStatuses(for provider: AgentProviderKind) -> [AgentAccountStatus] {
@@ -1148,7 +1165,7 @@ final class AppModel {
     }
 
     private func allConfiguredAccounts() -> [ConfiguredAgentAccount] {
-        AgentProviderKind.allCases.flatMap { provider in
+        providerOrder.flatMap { provider in
             configuredAccounts(for: provider).map { directory in
                 ConfiguredAgentAccount(provider: provider, directory: directory)
             }
@@ -1171,10 +1188,10 @@ final class AppModel {
 
     private var menuBarAccountStatuses: [AgentAccountStatus] {
         let candidates = menuBarCandidateAccountStatuses
-        let statusesByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
 
         if isMenuBarAccountSelectionExplicit {
-            return menuBarSelectedAccountIDs.compactMap { statusesByID[$0] }
+            let selectedIDs = Set(menuBarSelectedAccountIDs)
+            return candidates.filter { selectedIDs.contains($0.id) }
         }
 
         return Array(candidates.prefix(menuBarMaxDisplayedAccounts))
@@ -1659,6 +1676,37 @@ final class AppModel {
     private static func normalizedMenuBarMaxDisplayedAccounts(_ value: Int?) -> Int {
         let rawValue = value ?? defaultMenuBarMaxDisplayedAccounts
         return min(max(rawValue, minimumMenuBarMaxDisplayedAccounts), maximumMenuBarMaxDisplayedAccounts)
+    }
+
+    private static func normalizedProviderOrder(_ storedValues: [String]?) -> [AgentProviderKind] {
+        var seen = Set<AgentProviderKind>()
+        let storedProviders = (storedValues ?? []).compactMap(AgentProviderKind.init(rawValue:)).filter { provider in
+            seen.insert(provider).inserted
+        }
+
+        return storedProviders + AgentProviderKind.allCases.filter { provider in
+            seen.insert(provider).inserted
+        }
+    }
+
+    private static func moving<Element>(
+        _ elements: [Element],
+        fromOffsets source: IndexSet,
+        toOffset destination: Int
+    ) -> [Element]? {
+        let validSource = source.filter(elements.indices.contains)
+        guard validSource.count == source.count, !validSource.isEmpty else { return nil }
+
+        var updated = elements
+        let movingElements = validSource.sorted().map { updated[$0] }
+        for index in validSource.sorted(by: >) {
+            updated.remove(at: index)
+        }
+
+        let removedBeforeDestination = validSource.filter { $0 < destination }.count
+        let insertionIndex = min(max(destination - removedBeforeDestination, 0), updated.count)
+        updated.insert(contentsOf: movingElements, at: insertionIndex)
+        return updated
     }
 
     private static func uniqueMenuBarAccountIDs(_ ids: [String]) -> [String] {

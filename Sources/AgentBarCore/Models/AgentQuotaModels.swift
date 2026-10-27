@@ -240,9 +240,9 @@ public struct AgentQuotaSnapshot: Codable, Sendable, Equatable {
     }
 
     public var highlightMetric: AgentQuotaMetric? {
-        metrics.max { lhs, rhs in
+        metrics.filter(\.participatesInOverallQuotaStatus).max { lhs, rhs in
             lhs.usedPercent < rhs.usedPercent
-        } ?? metrics.first
+        }
     }
 }
 
@@ -357,6 +357,15 @@ public struct AgentQuotaMetric: Codable, Sendable, Equatable, Identifiable {
         "\(Int(remainingPercent.rounded()))%"
     }
 
+    /// Reserve-only capacity is useful detail, but it must not make the
+    /// account, provider, menu bar, or widget look exhausted.
+    public var participatesInOverallQuotaStatus: Bool {
+        let words = title.lowercased().split { character in
+            !character.isLetter && !character.isNumber
+        }
+        return Array(words.prefix(2)) != ["gpt", "reserve"]
+    }
+
     public static func usageWindow(
         windowMinutes: Int,
         usedPercent: Double,
@@ -460,6 +469,10 @@ public enum AgentQuotaMetricAggregation {
         }
 
         return firstSnapshot.metrics.compactMap { firstMetric in
+            guard firstMetric.participatesInOverallQuotaStatus else {
+                return nil
+            }
+
             let normalizedTitle = normalizeTitle(firstMetric.title)
             let matchingMetrics = snapshots.compactMap { snapshot in
                 snapshot.metrics.first { metric in

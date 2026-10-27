@@ -4,6 +4,30 @@ import Testing
 @testable import AgentBar
 
 @Test
+func quotaHistoryDeletesOnlySelectedAccountAndCanRecordAgain() async throws {
+    let fixture = try HistoryStoreFixture(name: #function)
+    defer { fixture.cleanup() }
+    let first = fixture.account(provider: .codex, name: "first")
+    let second = fixture.account(provider: .codex, name: "second")
+    let date = Date(timeIntervalSince1970: 1_800_000_000)
+    let snapshot = historySnapshot(provider: .codex, usedPercent: 25, updatedAt: date)
+    _ = try await fixture.store.record(account: first, snapshot: snapshot, sampledAt: date)
+    _ = try await fixture.store.record(account: second, snapshot: snapshot, sampledAt: date)
+    let key = QuotaHistoryIdentity.accountKey(for: first)
+    let oldWindow = try #require(await fixture.store.windows(for: key).first)
+
+    try await fixture.store.deleteAccountHistory(accountKey: key)
+    #expect(try await fixture.store.accounts().map(\.accountKey) == [QuotaHistoryIdentity.accountKey(for: second)])
+    #expect(try await fixture.store.windows(for: key).isEmpty)
+    #expect(try await fixture.store.samples(for: oldWindow.id, startingAt: nil).isEmpty)
+    #expect(try await fixture.store.stats().sampleCount == 1)
+    try await fixture.store.deleteAccountHistory(accountKey: key)
+    _ = try await fixture.store.record(account: first, snapshot: snapshot, sampledAt: date)
+    #expect(try await fixture.store.accounts().count == 2)
+    #expect(try await fixture.store.stats().sampleCount == 2)
+}
+
+@Test
 func quotaHistoryRecordsInitialChangesAndFifteenMinuteHeartbeat() async throws {
     let fixture = try HistoryStoreFixture(name: #function)
     defer { fixture.cleanup() }
